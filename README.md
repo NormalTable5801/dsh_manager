@@ -27,6 +27,9 @@
 备份还原 `~/.dsh`、跑一遍环境诊断、随手敲几条 `dsh` 命令」这些平时散落在多个终端里的操作，
 收进一个页面。它没有任何第三方运行时依赖，也没有自己独立的部署环境要求——装好 Node 就能跑。
 
+> [!IMPORTANT]
+> **与 DeepSeek 无关。** `dsh_manager` 是独立的第三方项目，与 DeepSeek / DeepSeek AI 无隶属、合作、背书或授权关系，**不是 DeepSeek Harness 的官方产物**。它仅在本机便捷地构建 / 托管 / 备份 / 诊断你自行安装的 DeepSeek Harness；其后续开发、维护与问题均由本仓库作者负责，与 DeepSeek 无关。「DeepSeek Harness」为 DeepSeek 的注册商标，本工具按 DeepSeek Harness 品牌指南使用该名称（项目名采用官方推荐的「DSH」缩写）。
+
 > [!CAUTION]
 > `dsh_manager` 是**本机自用工具**，默认只绑定 `127.0.0.1`，请勿改绑 `0.0.0.0` 或暴露到公网。
 > 它可能读取 / 备份你的真实数据目录 `~/.dsh`（含对话、插件配置与凭据），**请勿**把 `backups/`、`logs/`、

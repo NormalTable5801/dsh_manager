@@ -28,6 +28,14 @@ usually scatter across several terminals &mdash; start/stop dsh web, pull and sw
 `~/.dsh`, run an environment diagnostic, and fire arbitrary `dsh` commands &mdash; into a single page. It has no
 third-party runtime dependencies and no separate deployment environment: just install Node and run.
 
+> [!IMPORTANT]
+> **Not affiliated with DeepSeek.** `dsh_manager` is an independent third-party project with no affiliation,
+> endorsement, cooperation or authorization from DeepSeek / DeepSeek AI, and is **not an official DeepSeek Harness
+> product**. It merely builds / hosts / backs up / diagnoses the DeepSeek Harness you install yourself on your own
+> machine; its development, maintenance and issues are the responsibility of this repository's author. "DeepSeek
+> Harness" is a registered trademark of DeepSeek, used here per the DeepSeek Harness brand guidelines (the project
+> name adopts the officially recommended "DSH" abbreviation).
+
 > [!CAUTION]
 > `dsh_manager` is a **local, personal-use tool**. By default it binds only to `127.0.0.1` &mdash; do not rebind to
 > `0.0.0.0` or expose it to the public internet. It may read/back up your real data directory `~/.dsh`
