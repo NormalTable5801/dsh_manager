@@ -8,12 +8,13 @@
 </p>
 
 <p align="center">
-  <code>零依赖</code> · <code>仅 127.0.0.1</code> · <code>UTF-8 / GBK 兼容</code> · <code>对话数据与源码分离</code> · <code>移植 dsh-doctor(BSD-3)</code>
+  <code>零依赖</code> · <code>仅 127.0.0.1</code> · <code>UTF-8 / GBK 兼容</code> · <code>对话数据与源码分离</code> · <code>移植 dsh-doctor(BSD-3)</code> · <code>pnpm 工作区一键部署</code>
 </p>
 
 <p align="center">
   <a href="#功能总览">功能总览</a> ·
   <a href="#运行链路">运行链路</a> ·
+  <a href="#pnpm-部署方式">pnpm 部署方式</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#关键约定">关键约定</a> ·
   <a href="#安全说明">安全说明</a> ·
@@ -40,6 +41,7 @@
 | 诊断 Doctor | 移植自 `dsh-doctor`（BSD-3-Clause）的 17 项检查，flutter-doctor 风格，Windows 适配 |
 | 命令控制台 | 页面内执行 `dsh xxx`，输出经 SSE 实时回显（白名单 + argv 传入，不经 shell） |
 | 环境检查 | 检测 node / pnpm / git 版本，校验 node 是否满足 Harness 要求 |
+| 一键构建 | 在仓库内执行 `pnpm install` + `pnpm build`，产出 CLI 与 web 前端 |
 
 > [!TIP]
 > 排查疑难时优先走「诊断 Doctor」跑一遍完整检查，再在「控制台 Console」里执行 `dsh doctor`、`dsh --help`
@@ -66,6 +68,25 @@
 
 - **Harness 源码仓库**与 `dsh_manager` 是**两个独立的 git 仓库**（源码在兄弟目录，如 `D:\dsh\deepseek-harness-dsh-v0.1.1-rc.2`）。
 - 升级 / 回滚只改源码版本并重新构建，**永不触碰** `~/.dsh`；所有交互数据都在 `~/.dsh`，因此切换版本不影响你的对话与配置。
+
+## pnpm 部署方式
+
+`dsh_manager` 托管的是 DeepSeek Harness —— 一个 **pnpm workspace 单仓（monorepo）**。
+「装依赖 → 构建 → 起 web」整条链路都依赖 pnpm，这正是本工具"**一键部署**"的底层逻辑：
+
+```bash
+cd D:\dsh\deepseek-harness-dsh-v0.1.1-rc.2
+pnpm install       # 装齐各 workspace 依赖
+pnpm build         # 产出 apps/cli/lib/bin.js 与 apps/web/dist
+pnpm dsh web       # 运行仓库内定义的 dsh script，启动内置 web
+```
+
+对照到界面上：
+
+- 「**构建**」＝ 在仓库内执行 `pnpm install` + `pnpm run build`，生成 CLI 入口与 web 前端产物。
+- 「**启动 dsh web**」＝ 读取构建产物 `apps/cli/lib/bin.js` 启动；它等价于 `pnpm dsh web` 最终落到的命令（只是直连 node，省去 pnpm shim 的间接开销）。
+- 也可在「设置」切到 `source` 模式，用 `node --import tsx/esm apps/cli/src/bin.ts` 直接跑 tsx 源码，适合开发调试。
+- `apps/cli`（CLI）与 `apps/web`（内置 web）位于同一工作区，依赖复用、命令统一，无需额外安装——这是"零依赖 dsh_manager"之外的另一种"零额外部署"。
 
 ## 快速开始
 
