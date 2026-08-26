@@ -1,72 +1,109 @@
-# dsh_manager
+<p align="center">
+  <code>dsh_manager</code>
+</p>
 
-针对 DeepSeek Harness（DSH）的本地 Web 管理界面。**零依赖、开箱即用**；无需 `npm install`，
-直接 `node server.js` 或双击 `start.bat` 即可。默认只监听 `127.0.0.1`，不对外网开放。
+<p align="center">
+  <strong>针对 DeepSeek Harness 的本地 Web 管理界面 ——</strong>
+  一键托管 dsh web、检测/升级、版本回滚、数据备份还原、诊断 Doctor 与命令控制台，一个页面全搞定。
+</p>
 
-> 本仓库（`dsh_manager`）与 Harness 源码仓库是**两个独立的 git 仓库**。
-> Harness 源码位于 `dsh_manager` 的兄弟目录（如 `D:\dsh\deepseek-harness-dsh-v0.1.1-rc.2`）；
-> `dsh_manager` 只对它做"调用 / 构建 / 切换版本"等只读或受控操作，**不会改动 Harness 的源码与提交**。
+<p align="center">
+  <code>零依赖</code> · <code>仅 127.0.0.1</code> · <code>UTF-8 / GBK 兼容</code> · <code>对话数据与源码分离</code> · <code>移植 dsh-doctor(BSD-3)</code>
+</p>
 
-## 主要功能
+<p align="center">
+  <a href="#功能总览">功能总览</a> ·
+  <a href="#运行链路">运行链路</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#关键约定">关键约定</a> ·
+  <a href="#安全说明">安全说明</a> ·
+  <a href="#开发与构建">开发与构建</a> ·
+  <a href="#许可与致谢">许可与致谢</a>
+</p>
 
-| 能力 | 说明 |
-|------|------|
-| 一键启动 dsh web | 托管 dsh web 子进程：启动 / 停止 / 重启、实时日志、识别访问地址、探活端口、防止重复启动 |
-| 检测更新 + 升级 | 从官方仓库 `git fetch` 拉取 tag，对比 semver 提示可升级版本；升级前**自动备份 `~/.dsh`** |
-| 版本列表 + 回滚 | 拉取官方 git tags，一键切换到任意历史版本（`git checkout` + 重新构建） |
-| 数据备份 / 还原 | 把 `~/.dsh`（对话 + 插件配置 + 凭据 + 设置）备份到 `dsh_manager/backups`；可还原、删除、覆盖；保留上限管理 |
-| 环境检查 | 检测 node / pnpm / git 及版本，校验 node 是否满足 Harness 要求（`^22.19.x` 或 `24.x`） |
-| 诊断 Doctor | 移植自 `dsh-doctor`（BSD-3-Clause）的 17 项检查，flutter-doctor 风格；安装级 + harness 级；"诚实原则"修复 |
-| 控制台 Console | 在页面内执行 `dsh xxx` 命令，输出实时流式回显（白名单、argv 传参，不经 shell） |
-| 构建 | 在仓库内执行 `pnpm install` + `pnpm build` |
-| 危险操作二次确认 | 回滚、覆盖还原、删除备份均需弹窗确认 |
+无需 `npm install`、无需构建、无任何第三方运行时依赖：直接 `node server.js` 或双击 `start.bat`
+即可跑起来一个管理 DeepSeek Harness 的本地界面。
 
-## 目录结构
+> [!CAUTION]
+> `dsh_manager` 是**本机自用工具**，默认只绑定 `127.0.0.1`，请勿改绑 `0.0.0.0` 或暴露到公网。
+> 它可能读取/备份你的真实数据目录 `~/.dsh`（含对话与凭据），**请勿**把 `backups/`、`logs/`、`config.json`、`.env`
+> 加入版本控制（`.gitignore` 已默认忽略）。
 
+## 功能总览
+
+| 场景 | 能力 |
+| --- | --- |
+| 一键启动 web | 托管 dsh web 子进程：启动 / 停止 / 重启、实时日志、识别访问地址、探活端口、防重复启动 |
+| 更新升级 | 从官方仓库 `git fetch` 拉取 tag、对比 semver、提示可升级版本；升级前自动备份 `~/.dsh` |
+| 版本回滚 | 拉取官方 git tags，一键切换到任意历史版本（`git checkout` + 重新构建） |
+| 数据备份 | 把 `~/.dsh` 备份到 `backups/`，可还原 / 删除 / 覆盖，保留上限管理；还原前默认安全性备份 |
+| 诊断 Doctor | 移植自 `dsh-doctor`（BSD-3-Clause）的 17 项检查，flutter-doctor 风格，Windows 适配 |
+| 命令控制台 | 页面内执行 `dsh xxx`，输出经 SSE 实时回显（白名单 + argv 传入，不经 shell） |
+| 环境检查 | 检测 node / pnpm / git 版本，校验 node 是否满足 Harness 要求 |
+
+> [!TIP]
+> 排查疑难时优先走「诊断 Doctor」跑一遍完整检查，再在「控制台 Console」里执行 `dsh doctor`、`dsh --help`
+> 等命令看细节——两者覆盖安装级与环境运行级两个层面。
+
+## 运行链路
+
+`dsh_manager` 只做「托管与调度」，不参与 dsh 的内部实现。它与你机器上的两个东西协作：
+
+```text
+  你 (浏览器 127.0.0.1:8730)
+            │  1) 启动 / 停止 / 重启 / 实时日志
+            ▼
+   ┌─────────────────────────────┐
+   │         dsh_manager         │   <─ 本仓库（独立 git 仓库）
+   │   server.js + doctor.js     │   只读/受控操作，不改 Harness 源码
+   └─────────────────────────────┘
+        │                 │            │
+        │ git/pnpm/build↘ │ node↘      │ robocopy 备份/还原↘
+        ▼                 ▼            ▼
+   Harness 源码仓库       dsh web      ~/.dsh 数据目录
+   (apps/cli/lib/bin.js)  (子进程)     (对话+插件+凭据+设置)
 ```
-dsh_manager/
-├── server.js          # 零依赖 Node 服务（HTTP + REST + SSE + 子进程托管 + 控制台执行）
-├── doctor.js          # 诊断检查 + 安全修复（移植自 dsh-doctor，Windows 适配）
-├── config.json        # 运行配置（自动生成、含本机路径，故已 gitignore；缺失时用默认值自建）
-├── start.bat          # Windows 双击启动（UTF-8 + chcp 65001，前端 node 前台运行便于 Ctrl+C）
-├── public/            # WebUI（index.html / app.js / style.css）
-├── backups/           # ~/.dsh 备份存放处（自动生成，已 gitignore）
-├── logs/              # 任务日志（自动生成，已 gitignore）
-└── .gitignore         # 保护 backups / logs / 凭据等敏感数据不上传
-```
 
-## 使用步骤
+- **Harness 源码仓库**与 `dsh_manager` 是**两个独立的 git 仓库**（源码在兄弟目录，如 `D:\dsh\deepseek-harness-dsh-v0.1.1-rc.2`）。
+- 升级 / 回滚只改源码版本并重新构建，**永不触碰** `~/.dsh`；所有交互数据都在 `~/.dsh`，因此切换版本不影响你的对话与配置。
 
-1. 双击 `start.bat`（或 `node server.js`），窗口会自动打开 `http://127.0.0.1:8730`。
-2. 若仓库未配置官方 remote：进入「环境检查」→「添加官方 remote」，或直接点「拉取版本列表」。
-3. 先「构建」一次生成 `apps/cli/lib/bin.js` 与 web 前端产物，再「启动 dsh web」。
-4. 需要排查时：进「诊断 Doctor」运行全部检查；在「控制台 Console」里 `dsh doctor`、`dsh --help` 等随意执行。
+## 快速开始
 
-### 控制台 Console 说明
+1. 确保本机 `node` 满足 `^22.19.x` 或 `24.x`，且已安装 `pnpm` 与 `git`。
+2. 双击 `start.bat`（或 `node server.js`），窗口会自动打开 `http://127.0.0.1:8730`。
+3. 在「环境检查」为仓库配置官方 remote（或直接点「拉取版本列表」）；先「构建」一次生成 `apps/cli/lib/bin.js` 与 web 前端产物。
+4. 回到「启动 web」点「启动 dsh web」，即可打开 dsh 界面。
 
-- 只接受 `dsh` 开头的命令，例如 `dsh doctor`、`dsh --help`、`dsh web`。
-- 在仓库目录下以 `node apps\cli\lib\bin.js <参数>` 执行（含 `launchMode=source` 时走 tsx 源码）。
-- 参数**不经 shell**，直接作为 argv 传入，规避 `rm -rf /` 这类注入；一次只允许一条命令运行。
-- 输出经 SSE 实时回显；可随时「停止」（taskkill 整棵进程树）。
+> 若点击 `start.bat` 后窗口一闪而过（而非停留在服务运行态），说明启动失败——多为端口被占用或 node 版本不符，按 Ctrl+C / 查看窗口报错即可。
 
 ## 关键约定
 
-- **升级 / 回滚**：只切换源码版本并重新构建，**不触碰** `~/.dsh`。对话、插件配置、凭据都在 `~/.dsh`，与源码分离，因此升级源码不影响你的数据。
-- **自动备份**：升级 / 回滚前默认把当前 `~/.dsh` 备份到 `backups/`（可在设置关闭）。
-- **还原数据**：还原会用备份覆盖当前 `~/.dsh`，默认先对当前数据做一次安全性备份。
-- **源码改动保护**：切换版本前若检测到仓库存在已跟踪的未提交改动，会中止并提示。
+- **数据与代码隔离**：对话、插件配置、凭据都在 `~/.dsh`，与源码仓库分离；升级 / 回滚不影响数据。
+- **诚实原则修复**：Diagnostic 的修复只做声明为安全、可回滚的进程内动作——settings 缺失/损坏先备份再重建；凭据手动输入后写入 `~/.dsh/.env`；其余只给指引，不越权改动。
+- **破坏性操作二次确认**：回滚、覆盖还原、删除备份均需弹窗确认。
+- **控制台白名单**：只接受 `dsh` 开头的命令，参数直接作为 argv 传入，不经过 shell，规避 `rm -rf /` 这类注入。
 
 ## 安全说明
 
-- 服务仅绑定 `127.0.0.1`，不对外网开放。
-- 所有命令（git / pnpm / robocopy / node）均由内部固定命令 + 严格校验过的参数拼接，输入（tag、备份 id 等）均已校验，避免注入。
-- 控制台命令限定 `dsh` 前缀并以 argv 传入，同样不经过 shell。
-- **`.gitignore` 已保护 `backups/`（含真实 `~/.dsh` 数据）、`logs/`、`config.json`（本机路径）、`.env`、密钥等**，请勿 `git add -f` 强行提交这些文件。
-- 该工具用于自用管理本机 Harness，请谨慎操作还原 / 回滚 / 删除备份等破坏性动作。
+- 服务仅绑定 `127.0.0.1`；所有命令均由内部固定命令 + 严格校验过的参数拼接，避免注入。
+- `.gitignore` 已忽略 `backups/`（含真实 `~/.dsh` 数据）、`logs/`、`config.json`（本机路径）、`.env`、密钥与编辑器临时文件；**请勿 `git add -f` 强制提交**。
+- 该工具用于自用，请谨慎执行还原 / 回滚 / 删除备份等动作。
 
-## 常见问题
+## 开发与构建
 
-- **端口被占用**：manager 会自动换用下一个端口。dsh web 端口在「设置」里配 `webPort`（0 = 自动）。
-- **node 版本不够**：Harness 要求 `node ^22.19.x` 或 `24.x`，版本不足会导致构建失败，环境检查页会有告警。
-- **拉取不到版本**：请确认网络可访问 GitHub，且仓库已配置官方 remote。
-- **启动后窗口空 / 无浏览器弹出**：确认 `server.js` 是否正在监听，Ctrl+C 应能干净退出。
+`dsh_manager` 本身零依赖，开发即改即用：
+
+```bash
+cd d:\dsh\dsh_manager
+node server.js            # 启动管理界面，浏览器打开 http://127.0.0.1:8730
+```
+
+- 后端：`server.js`（HTTP + REST + SSE + 子进程托管 + 控制台执行）、`doctor.js`（诊断）。
+- 前端：`public/index.html`、`public/app.js`、`public/style.css`（无构建，直接生效）。
+- 本目录是一个已初始化的 git 仓库；改动后按需提交即可，注意保持 `.gitignore` 生效。
+
+## 许可与致谢
+
+- `dsh_manager` 为自研本地工具（默认仅本机自用）。其「诊断 Doctor」移植自 `dsh-doctor`
+  （BSD-3-Clause），`doctor.js` 顶部保留原版权与许可声明。
+- 管理对象为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git)。
