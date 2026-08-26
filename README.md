@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <code>零依赖</code> · <code>无需 npm install</code> · <code>仅 127.0.0.1</code> · <code>UTF-8 / GBK 兼容</code> · <code>数据 / 源码分离</code> · <code>pnpm 工作区部署</code> · <code>移植 dsh-doctor(BSD-3)</code>
+  <code>零依赖</code> · <code>无需 npm install</code> · <code>仅 127.0.0.1</code> · <code>UTF-8 / GBK 兼容</code> · <code>数据 / 源码分离</code> · <code>pnpm 工作区部署</code> · <code>诊断引擎纯融入 dsh-doctor</code>
 </p>
 
 <p align="center">
@@ -44,7 +44,7 @@
 | 版本回滚 | 拉取官方 git tags，一键切换到任意历史版本（`git checkout` + 重新构建） |
 | 数据备份 | 把 `~/.dsh` 备份到 `backups/`，可还原 / 删除 / 覆盖，保留上限管理；还原前默认安全性备份 |
 | 一键构建 | 在仓库内执行 `pnpm install` + `pnpm build`，产出 CLI 入口与 web 前端 |
-| 诊断 Doctor | 内置 17 项检查（安装级 + harness 级），flutter-doctor 风格，诚实原则安全修复 |
+| 诊断 Doctor | 纯融入 dsh-doctor 完整诊断引擎①（env / profile / session / 远程检查目录 + 版本提示 + dsh_manager 自检），flutter-doctor 风格，诚实原则安全修复 |
 | 命令控制台 | 页面内执行 `dsh xxx`，输出经 SSE 实时回显；白名单 + argv 传入，不经 shell |
 | 环境检查 | 检测 node / pnpm / git 及版本，校验 node 是否满足 Harness 约束并给出版本指引 |
 
@@ -95,17 +95,24 @@ pnpm dsh web       # 运行仓库内定义的 dsh script，启动内置 web
 
 ## 诊断 Doctor
 
-内置的「诊断 Doctor」移植自社区 [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor)
-（BSD-3-Clause），并按本工具的实际形态做了 **Windows 适配**，采用 flutter-doctor 风格报告
-（`✓ 通过 / ! 关注 / ✗ 阻断`）。
+内置的「诊断 Doctor」把社区 dsh-doctor 的完整诊断引擎**纯融入、重写进 `doctor.js`**（不链接外部文件），
+按其三层设计运行，采用 flutter-doctor 风格报告（`✓ 通过 / ! 关注 / ✗ 阻断`）：
 
-- **安装级检查**：node / git / pnpm 版本、凭据、仓库 git 状态、端口与可执行项。
-- **harness 级检查**：`settings.yaml`、sessions、凭据来源链、web.log、repository 插件与挂载状态。
-- **诚信原则修复**：`--fix` 只执行声明为安全、可回滚的动作——
-  settings 缺失 / 损坏时先备份再写入最小合法配置；凭据由你手动输入后写入 `~/.dsh/.env`（`chmod 600`）；
+- **Layer A 内置检查**：`env`（node / pnpm / zstd / node-pty / 存储 JSON / dsh-session 锚点 / 3080 端口）、
+  `profile`（bundle 解析 / id 冲突 / insert 名 / file: 依赖 / 顶层重复 / patch 结构 / adapter 冲突 /
+  settings 注入 / main 入口 / bin 可执行 等）、`session`（zstd 容器帧数 / 孤儿 tool_call / 未闭合 turn /
+  seq 连续 / sourceEventSeqs / 未知事件类型 / end-seed 重放 / 全会话扫描）。
+- **Layer A 远程检查目录（catalog）**：声明式只读探测规则（内置副本 + 每 6h 拉取远端，可动态增新检查，无需重装）。
+- **Layer B 版本提示**：对比本端口版本与 dsh-doctor 上游版本，仅提示、不自动更新。
+- **dsh_manager 自检**：凭据 `DEEPSEEK_API_KEY` 存在性与来源链（进程环境 → cwd/.env → `~/.dsh/.env` →
+  provider 凭据存储，**只判存在性、绝不回显值**）、`settings.yaml`、web.log、repository 插件安装痕迹、仓库 git 状态。
+- **诚信原则修复**：settings 缺失 / 损坏时先备份再写入最小合法配置；凭据由你手动输入后写入 `~/.dsh/.env`；
   其余问题只输出可直接复制的精确命令，**不越权改动**你的环境。
-- 依赖 Unix 安装布局的检查（privilege / ownership / layout / staging / path / hooks / lefthook）
-  在 Windows 下显式判定为「跳过」，而不是静默误报。
+
+<sup>① 诊断引擎改写自社区同名项目 [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor)（MIT License）。
+其 dsh_manager 自检的诊断框架（report 结构、`fixSettings`/`fixCredentials` 修复助手等）衍生自本项目先期移植自
+[`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor)（BSD-3-Clause，版权 `dsh-external`）的实现；
+其中凭据来源链含 provider 凭据存储层属 dsh_manager **自有增强**，非 coppynight 原样逻辑。两份原版权与许可全文均保留在 `doctor.js` 末尾。</sup>
 
 ## 命令控制台
 
@@ -162,7 +169,11 @@ node server.js       # 启动管理界面，浏览器打开 http://127.0.0.1:873
 ## 许可与致谢
 
 - 本项目以 **BSD-3-Clause** 许可证发布（版权 `NormalTable5801`，2026），完整条款见根目录 [`LICENSE`](LICENSE)。
-- 其「诊断 Doctor」移植自
-  [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor)（BSD-3-Clause，版权 `dsh-external`）。
-  为符合 BSD-3 第 1 条源码再分发要求，`doctor.js` 顶部标注来源、末尾保留**原版权声明 + 条款 + 免责声明全文**。
+- 其「诊断 Doctor」的**诊断引擎**改写自
+  [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor)（MIT License，版权 `moonquake2004`）。
+  为符合 MIT 许可证要求，`doctor.js` 顶部标注来源、末尾保留其许可证全文。
+- 其「dsh_manager 自检」的诊断框架衍生自先期移植自
+  [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor)（BSD-3-Clause，版权 `dsh-external`）的实现；
+  凭据来源链（provider 凭据存储层）为 dsh_manager **自有增强**。
+  为符合 BSD-3 第 1 条源码再分发要求，`doctor.js` 末尾一并保留**原版权声明 + 条款 + 免责声明全文**。
 - 管理对象为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git)。

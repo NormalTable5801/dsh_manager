@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <code>zero-dep</code> · <code>no npm install</code> · <code>127.0.0.1 only</code> · <code>UTF-8 / GBK</code> · <code>data / source separation</code> · <code>pnpm workspace</code> · <code>ported from dsh-doctor(BSD-3)</code>
+  <code>zero-dep</code> · <code>no npm install</code> · <code>127.0.0.1 only</code> · <code>UTF-8 / GBK</code> · <code>data / source separation</code> · <code>pnpm workspace</code> · <code>diagnostic engine inlined from dsh-doctor</code>
 </p>
 
 <p align="center">
@@ -51,7 +51,7 @@ third-party runtime dependencies and no separate deployment environment: just in
 | Version rollback | Pulls official git tags and switches to any historical version with one click (`git checkout` + rebuild) |
 | Data backup | Backs up `~/.dsh` to `backups/`; restore / delete / overwrite with retention-limit management; safe pre-restore backup by default |
 | One-click build | Runs `pnpm install` + `pnpm build` inside the repo to produce the CLI entry and the web frontend |
-| Diagnostic Doctor | 17 checks (install-level + harness-level), flutter-doctor style, honest-principle safe repairs |
+| Diagnostic Doctor | Inlines the full dsh-doctor engine① (env / profile / session / remote check catalog + version hint + dsh_manager self-checks), flutter-doctor style, honest-principle safe repairs |
 | Command console | Runs `dsh xxx` from the page with real-time SSE streaming output; whitelist + argv passing, never through a shell |
 | Environment check | Detects node / pnpm / git versions and validates that node meets Harness constraints |
 
@@ -104,17 +104,31 @@ Mapped to the UI:
 
 ## Diagnostic Doctor
 
-The built-in **Diagnostic Doctor** is ported from the community [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor)
-(BSD-3-Clause) and **adapted for Windows**, using a flutter-doctor style report (`✓ ok / ! warn / ✗ error`).
+The built-in **Diagnostic Doctor inlines and rewrites** the community dsh-doctor's full diagnostic engine
+**into `doctor.js`** (no external file linking), running by its three-layer design with a flutter-doctor style
+report (`✓ ok / ! warn / ✗ error`):
 
-- **Install-level checks:** node / git / pnpm versions, credentials, repo git state, ports and executables.
-- **Harness-level checks:** `settings.yaml`, sessions, credential source chain, web.log, repository plugins and mount state.
-- **Honest repair principle:** `--fix` runs only actions declared safe and rollback-able &mdash;
-  when `settings` is missing/corrupt it backsup then writes a minimal valid config; credentials are written to
-  `~/.dsh/.env` (`chmod 600`) only after you type them in; everything else emits precise, copy-pasteable commands
-  and does **not** modify your environment without permission.
-- Checks that depend on a Unix install layout (privilege / ownership / layout / staging / path / hooks / lefthook)
-  are explicitly reported as "skipped (not applicable here)" on Windows rather than silently misreported.
+- **Layer A built-in checks:** `env` (node / pnpm / zstd / node-pty / storage JSON / dsh-session anchors / port 3080),
+  `profile` (bundle resolution / id conflicts / insert names / file: deps / top-level duplicates / patch structure /
+  adapter conflicts / settings injection / main entries / declared bins, etc.),
+  `session` (zstd container frame count / orphan tool_call / unclosed turns / seq continuity / sourceEventSeqs /
+  unknown event types / end-seed replay / full-session scan).
+- **Layer A remote check catalog:** declarative read-only probe rules (bundled copy + remote refresh every 6h;
+  new checks take effect without reinstalling).
+- **Layer B version hint:** compares the ported version against the dsh-doctor upstream; hints only, never auto-updates.
+- **dsh_manager self-checks:** presence and source chain of the `DEEPSEEK_API_KEY` credential
+  (process env → cwd/.env → `~/.dsh/.env` → provider credential store; **existence only, never echoes the value**),
+  `settings.yaml`, web.log, repository-plugin install traces and repo git state.
+- **Honest repair principle:** when `settings` is missing/corrupt it backs up then writes a minimal valid config;
+  credentials are written to `~/.dsh/.env` only after you type them in; everything else emits precise,
+  copy-pasteable commands and does **not** modify your environment without permission.
+
+<sup>① Diagnostic engine written from [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor)
+(MIT License). The diagnostic framework of the dsh_manager self-checks (report structure, the
+`fixSettings`/`fixCredentials` repair helpers, etc.) derives from this project's earlier port of
+[`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor) (BSD-3-Clause, &copy; `dsh-external`);
+the credential source chain incl. the provider credential store is a dsh_manager **own enhancement**, not
+coppynight's original logic. Both original copyright and license texts are retained at the end of `doctor.js`.</sup>
 
 ## Command console
 
@@ -176,8 +190,12 @@ node server.js       # start the admin UI, browser opens http://127.0.0.1:8730
 
 - This project is released under the **BSD-3-Clause** license (&copy; `NormalTable5801`, 2026);
   see the root [`LICENSE`](LICENSE) for the full terms.
-- Its **Diagnostic Doctor** is ported from
-  [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor) (BSD-3-Clause, &copy; `dsh-external`).
-  To satisfy clause 1 of BSD-3 for source redistribution, `doctor.js` names the source at the top and retains the
-  **full original copyright notice, terms and disclaimer** at the end.
+- Its **Diagnostic Doctor's engine** is written from
+  [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor) (MIT License, &copy; `moonquake2004`).
+  To satisfy the MIT license, `doctor.js` names the source at the top and retains its license text at the end.
+- Its **dsh_manager self-checks** derive from this project's earlier port of
+  [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor) (BSD-3-Clause, &copy; `dsh-external`);
+  the credential source chain (provider credential store) is a dsh_manager **own enhancement**.
+  To satisfy clause 1 of BSD-3 for source redistribution, `doctor.js` also retains the **full original copyright
+  notice, terms and disclaimer** at the end.
 - Manages [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git).
