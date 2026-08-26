@@ -1,6 +1,6 @@
-<p align="center">
-  <code>dsh_manager</code>
-</p>
+<h1 align="center">
+  dsh_manager
+</h1>
 
 <p align="center">
   <strong>DeepSeek Harness 的本地 Web 管理台</strong> —— 零依赖、无需 <code>npm install</code>，仅本机运行。
