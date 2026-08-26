@@ -707,7 +707,7 @@ async function handleApi(req, res, url) {
       const onlyRaw = url.searchParams.get("only");
       const only = onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : null;
       const ctx = doctor.buildContext({ dshHome: resolveDshHome(), repoPath: config.repoPath, processVersion: process.version });
-      const report = doctor.buildReport(ctx, only);
+      const report = await doctor.buildReport(ctx, only);
       return sendJson(res, 200, { ok: true, checkList: doctor.CHECKS.map((c) => ({ id: c.id, title: c.title, level: c.level })), ...report });
     } catch (e) { return sendError(res, 500, e.message); }
   }
