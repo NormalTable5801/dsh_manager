@@ -166,7 +166,9 @@ node server.js       # start the admin UI, browser opens http://127.0.0.1:8730
 
 ## License &amp; credits
 
-- `dsh_manager` is a self-authored local tool (personal use by default). Its **Diagnostic Doctor** is ported from
+- This project is released under the **BSD-3-Clause** license (&copy; `NormalTable5801`, 2026);
+  see the root [`LICENSE`](LICENSE) for the full terms.
+- Its **Diagnostic Doctor** is ported from
   [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor) (BSD-3-Clause, &copy; `dsh-external`).
   To satisfy clause 1 of BSD-3 for source redistribution, `doctor.js` names the source at the top and retains the
   **full original copyright notice, terms and disclaimer** at the end.

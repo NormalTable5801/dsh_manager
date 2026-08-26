@@ -158,7 +158,8 @@ node server.js       # 启动管理界面，浏览器打开 http://127.0.0.1:873
 
 ## 许可与致谢
 
-- `dsh_manager` 为自研本地工具（默认仅本机自用）。其「诊断 Doctor」移植自
+- 本项目以 **BSD-3-Clause** 许可证发布（版权 `NormalTable5801`，2026），完整条款见根目录 [`LICENSE`](LICENSE)。
+- 其「诊断 Doctor」移植自
   [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor)（BSD-3-Clause，版权 `dsh-external`）。
   为符合 BSD-3 第 1 条源码再分发要求，`doctor.js` 顶部标注来源、末尾保留**原版权声明 + 条款 + 免责声明全文**。
 - 管理对象为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git)。
