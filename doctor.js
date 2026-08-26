@@ -86,6 +86,25 @@ function locateWebLog(dshHome) {
   }
   return undefined;
 }
+/** 读取 RepositoryCache 里已安装的 repository 插件名（owner/repo）。
+ * 安装痕迹 = $DSH_HOME/cache/repository-plugins/<源>/.repository-cache.json。 */
+function cachedRepositoryNames(dshHome) {
+  const cacheRoot = path.join(dshHome, "cache", "repository-plugins");
+  if (!exists(cacheRoot)) return [];
+  const names = [];
+  let entries;
+  try { entries = fs.readdirSync(cacheRoot); } catch { return []; }
+  for (const entry of entries) {
+    const marker = path.join(cacheRoot, entry, ".repository-cache.json");
+    if (!exists(marker)) continue;
+    try {
+      const { specifier } = JSON.parse(fs.readFileSync(marker, "utf8"));
+      const m = /^github:([^/\s]+)\/([^#\s]+)#/.exec(specifier);
+      if (m) names.push(`${m[1]}/${m[2]}`);
+    } catch {}
+  }
+  return [...new Set(names)];
+}
 
 /* ------------------------------- 检查定义 ------------------------------- */
 
@@ -149,10 +168,13 @@ const CHECKS = [
   {
     id: "credentials-chain", level: "harness", title: "凭据来源链",
     run(c) {
+      const cwdEnvFile = path.join(process.cwd(), ".env");
+      const cwdEnvLines = readFileSafe(cwdEnvFile, 64 * 1024)?.split(/\r?\n/) ?? [];
       const layers = [];
       if (process.env.DEEPSEEK_API_KEY) layers.push("进程环境");
+      if (cwdEnvLines.some((l) => /^\s*DEEPSEEK_API_KEY\s*=/.test(l))) layers.push(`cwd/.env（${cwdEnvFile}）`);
       if (c.envKeyLines.some((l) => /^\s*DEEPSEEK_API_KEY\s*=/.test(l))) layers.push(`$DSH_HOME/.env（${c.envFile}）`);
-      if (layers.length === 0) return { severity: "warn", message: "没有任何一层提供 DEEPSEEK_API_KEY（进程环境 → $DSH_HOME/.env）", remediation: "在“诊断”页补写 $DSH_HOME/.env，或设置环境变量后重启" };
+      if (layers.length === 0) return { severity: "warn", message: "没有任何一层提供 DEEPSEEK_API_KEY（进程环境 → cwd/.env → $DSH_HOME/.env）", remediation: "在“诊断”页补写 $DSH_HOME/.env，或设置环境变量后重启" };
       return { severity: "ok", message: `DEEPSEEK_API_KEY 由 ${layers.join("、")} 提供（不显示值）` };
     },
   },
@@ -173,14 +195,25 @@ const CHECKS = [
   {
     id: "repository-plugins", level: "harness", title: "repository 插件",
     run(c) {
-      if (c.cordisText === undefined) return { severity: "ok", message: "无 cordis.patch.yml —— 未声明 repository 插件" };
+      if (c.cordisText === undefined) return [{ severity: "ok", message: "无 cordis.patch.yml —— 未声明 repository 插件" }];
       const repoLines = String(c.cordisText).split(/\r?\n/)
         .filter((l) => /^\s*-\s*['"]?github:/.test(l))
         .map((l) => l.trim().replace(/^-\s*['"]?/, "").replace(/['"]\s*$/, ""));
-      if (repoLines.length === 0) return { severity: "ok", message: "已存在 cordis.patch.yml，但未发现 github: repository 安装行" };
+      if (repoLines.length === 0) return [{ severity: "ok", message: "已存在 cordis.patch.yml，但未发现 github: repository 安装行" }];
+      const findings = [];
       const bad = repoLines.filter((l) => !/^github:[^/\s]+\/[^#\s]+#[0-9a-f]{7,40}&path:\/[^\s]+$/.test(l));
-      if (bad.length) return { severity: "warn", message: `repository 源格式异常：${bad.join("、")}`, remediation: "期望 `github:<owner>/<repo>#<commit>&path:/<path>`，请修正 cordis.patch.yml" };
-      return { severity: "ok", message: `声明的 repository 源格式合法（${repoLines.length} 条）：${repoLines.map((s) => s.split("#")[0]).join("、")}` };
+      if (bad.length) findings.push({ severity: "warn", message: `repository 源格式异常：${bad.join("、")}`, remediation: "期望 `github:<owner>/<repo>#<commit>&path:/<path>`，请修正 cordis.patch.yml" });
+      // 核对声明源是否真有安装缓存痕迹（缺安装可能因 ref 失效/依赖不可解析）
+      const declared = [];
+      for (const s of repoLines) {
+        const m = /^github:([^/\s]+)\/([^#\s]+)#/.exec(s);
+        if (m) declared.push(`${m[1]}/${m[2]}`);
+      }
+      const installed = cachedRepositoryNames(c.dshHome);
+      const missing = declared.filter((n) => !installed.includes(n));
+      if (missing.length) findings.push({ severity: "warn", message: `声明的 repository 源缺少安装缓存痕迹：${missing.join("、")}`, remediation: "可能未成功安装（commit 引用失效或依赖无法解析）；可清空 $DSH_HOME/cache/repository-plugins 后重启重装" });
+      if (findings.length === 0) findings.push({ severity: "ok", message: `声明的 repository 源格式合法且有安装缓存痕迹（${declared.length} 条）：${declared.join("、")}` });
+      return findings;
     },
   },
   {
