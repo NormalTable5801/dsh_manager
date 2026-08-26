@@ -125,6 +125,7 @@ node server.js            # 启动管理界面，浏览器打开 http://127.0.0.
 
 ## 许可与致谢
 
-- `dsh_manager` 为自研本地工具（默认仅本机自用）。其「诊断 Doctor」移植自 `dsh-doctor`
-  （BSD-3-Clause），`doctor.js` 顶部保留原版权与许可声明。
+- `dsh_manager` 为自研本地工具（默认仅本机自用）。其「诊断 Doctor」移植自
+  [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor)（BSD-3-Clause，版权 `dsh-external`）。
+  `doctor.js` 顶部标注来源、末尾保留**原版权声明 + 条款 + 免责声明全文**，以符合 BSD-3 第 1 条源码再分发要求。
 - 管理对象为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git)。
