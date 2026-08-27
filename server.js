@@ -14,6 +14,64 @@ const path = require("path");
 const os = require("os");
 const { spawn, spawnSync, exec } = require("child_process");
 const doctor = require("./doctor");
+const plugins = require("./plugins");
+
+/* ---------------------------------------------------------------
+ * 插件候选源搜索（npm registry / GitHub）
+ * 只读对外 HTTP 请求，用于把「可安装的 spec」搜出来给用户选择；
+ * 真正的安装仍走现有 /api/plugins/profile/add（dsh plugin … add <spec>）。
+ * --------------------------------------------------------------- */
+const NPM_SEARCH = "https://registry.npmjs.org/-/v1/search";
+const GITHUB_SEARCH = "https://api.github.com/search/repositories";
+const SEARCH_TIMEOUT_MS = 12000;
+
+async function _fetchSearch(url) {
+  const headers = { "User-Agent": "dsh-manager", "Accept": "application/vnd.github+json" };
+  const ghToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (ghToken) headers.Authorization = `Bearer ${ghToken}`;
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`远端请求失败 HTTP ${res.status}${res.status === 429 || res.status === 403 ? "（GitHub 未认证限流 10 次/分钟，稍后再试或设置 GITHUB_TOKEN）" : ""}`);
+  return res.json();
+}
+
+/** 按关键词在 npm registry 搜索 → 追加 npm 候选卡片。失败时记一条带 error 的卡片。 */
+async function searchNpm(q, into) {
+  try {
+    const j = await _fetchSearch(`${NPM_SEARCH}?text=${encodeURIComponent(q)}&size=20`);
+    const seen = new Set();
+    for (const o of (j.objects || [])) {
+      const pkg = o.package || {};
+      if (!pkg.name || seen.has(pkg.name)) continue;
+      seen.add(pkg.name);
+      into.push({
+        source: "npm",
+        label: `${pkg.name}@${pkg.version || ""}`,
+        spec: `${pkg.name}@${pkg.version || ""}`,
+        description: pkg.description || "",
+        extra: "npm registry",
+        pnpmGate: false,
+      });
+    }
+  } catch (e) { into.push({ source: "npm", error: e.message }); }
+}
+
+/** 按关键词搜索 GitHub 仓库 → 追加 git 候选卡片。带 pnpm build 白名单提示。 */
+async function searchGithub(q, into) {
+  try {
+    const j = await _fetchSearch(`${GITHUB_SEARCH}?q=${encodeURIComponent(q)}&per_page=20`);
+    for (const it of (j.items || [])) {
+      into.push({
+        source: "github",
+        label: it.full_name,
+        spec: `github:${it.full_name}`,
+        description: it.description || "",
+        extra: `github · ${it.stargazers_count || 0}★`,
+        pnpmGate: true,
+        pnpmGateText: "git 源若被 pnpm 拦截构建，需在 profiles/<name>/pnpm-workspace.yaml 的 allowBuilds 加白名单后重装",
+      });
+    }
+  } catch (e) { into.push({ source: "github", error: e.message }); }
+}
 
 /* ------------------------------- 常量 ------------------------------- */
 
@@ -33,8 +91,17 @@ const NODE_NEED = "node ^22.19.x（或 24.x）";
 
 /* ------------------------------- 配置 ------------------------------- */
 
+// 新人依赖安装指引（默认走引导式：复制命令 / 打开官方页；点“自动安装”才用 winget/corepack 半自动）。
+// cmd 是可复制给用户的安装命令；url 是官方下载页。
+const DEP_HELP = {
+  node: { cmd: "winget install --id OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements", url: "https://nodejs.org/zh-cn/download" },
+  pnpm: { cmd: "corepack enable\ncorepack prepare pnpm@latest --activate", url: "https://pnpm.io/zh/installation" },
+  git:  { cmd: "winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements", url: "https://git-scm.com/download/win" },
+};
+
 const DEFAULT_CONFIG = {
   repoPath: "",                 // 留空自动发现
+  onboarded: false,             // 是否已完成首次引导（写入被 gitignore 的 config.json）
   dshHome: "",                  // 留空 => %USERPROFILE%\.dsh / $DSH_HOME
   port: 8730,
   webPort: 0,                   // >0 用于探活与识别访问地址
@@ -594,7 +661,67 @@ function envInfo() {
     if (!good) info.warnings.push(info.nodeMessage);
   }
   if (!info.pnpm) info.warnings.push("未检测到 pnpm");
+  info.nodeHelp = DEP_HELP.node;
+  info.pnpmHelp = DEP_HELP.pnpm;
+  info.gitHelp = DEP_HELP.git;
   return info;
+}
+
+function envMissing() {
+  const e = envInfo();
+  const missing = [];
+  if (!e.node || !e.nodeOk) missing.push("node");
+  if (!e.pnpm) missing.push("pnpm");
+  if (!e.git) missing.push("git");
+  return missing;
+}
+
+/* ------------------------------- 新人依赖安装 / 仓库获取 ------------------------------- */
+
+const DEP_INSTALL_CMDS = {
+  node: [["winget", "install", "--id", "OpenJS.NodeJS.LTS", "--silent", "--accept-package-agreements", "--accept-source-agreements"]],
+  pnpm: [["corepack", "enable"], ["corepack", "prepare", "pnpm@latest", "--activate"]],
+  git: [["winget", "install", "--id", "Git.Git", "--silent", "--accept-package-agreements", "--accept-source-agreements"]],
+};
+
+function whichExe(name) {
+  const r = runSync("where", [name]);
+  return /not found|could not|找不到/i.test((r.out || "") + (r.err || "")) ? false : !!r.out;
+}
+
+async function autoInstallTools(atools) {
+  const tools = (atools && atools.length ? atools : envMissing()).filter((t) => DEP_INSTALL_CMDS[t] && !(t === "node" ? (envInfo().node && envInfo().nodeOk) : envInfo()[t]));
+  if (!tools.length) return { installed: [], skipped: tools };
+  const t = await startTask("自动安装依赖：" + tools.join(", "));
+  try {
+    for (const tool of tools) {
+      if ((tool === "node" || tool === "git") && !whichExe("winget")) {
+        listenTask(t, `[warn] 系统未检测到 winget，无法自动安装 ${tool}；请改用“打开官方下载页”手动安装。`);
+        continue;
+      }
+      for (const [cmd, ...args] of DEP_INSTALL_CMDS[tool]) {
+        const code = await run({ cmd, args, label: tool, onLine: (l) => listenTask(t, l) });
+        if (code !== 0) throw new Error(`${tool} 安装失败 (exit=${code})`);
+      }
+    }
+    finishTask(t, true);
+    return { installed: tools, skipped: [] };
+  } catch (e) { finishTask(t, false, e); throw e; }
+}
+
+async function ensureHarnessRepo() {
+  const has = config.repoPath && fs.existsSync(path.join(config.repoPath, "package.json"));
+  if (has) return { already: true, repoPath: config.repoPath };
+  const target = path.join(path.dirname(ROOT), "deepseek-harness");
+  const t = await startTask("获取 Harness 源码（git clone）");
+  try {
+    const code = await run({ cmd: "git", args: ["clone", "--depth", "1", OFFICIAL_REMOTE, target], label: "git", onLine: (l) => listenTask(t, l) });
+    if (code !== 0) throw new Error(`git clone 失败 (exit=${code})`);
+    config.repoPath = target;
+    saveConfig();
+    finishTask(t, true);
+    return { already: false, repoPath: target };
+  } catch (e) { finishTask(t, false, e); throw e; }
 }
 
 function statusPayload() {
@@ -619,6 +746,7 @@ function statusPayload() {
     ok: true,
     repoPath: repo, repoExists, home, homeSize: cachedHomeSize(),
     version, gitRef: ref, dirty, remoteConfigured,
+    onboarded: !!config.onboarded, envMissing: envMissing(),
     web: webState(), env: envInfo(), backups: listBackups(),
     task: summary(activeTask), taskHistory,
     mixed: config,
@@ -691,6 +819,25 @@ function stopConsoleProcess() {
   }
 }
 
+/* ------------------------------- 插件 Plugin ------------------------------- */
+
+/** 内置 CLI 是否就绪（built 产物或 source 入口能否解析到）。 */
+function pluginCliAvailable() {
+  if (config.launchMode === "source") return fs.existsSync(path.join(config.repoPath, "apps/cli/src/bin.ts"));
+  return fs.existsSync(path.join(config.repoPath, "apps/cli/lib/bin.js"));
+}
+/** 转发一条 `dsh plugin ...` 命令（自动跑 pnpm 并 reconcile bundle 层）。 */
+async function runPluginCli(args, tl) {
+  const base = dshBinArgs();
+  return run({ cmd: base[0], args: [...base.slice(1), ...args], cwd: config.repoPath, env: { ...process.env, [DSHDIR_ENV]: resolveDshHome() }, onLine: tl, label: "dsh" });
+}
+/** GET /api/plugins 汇总载荷（当前 dsh 官方机制仅 Profile 组合包）。 */
+function pluginsSummary() {
+  const home = resolveDshHome();
+  const profiles = plugins.listProfiles(home).map((pr) => ({ ...pr, ...plugins.listProfilePlugins(home, pr.name) }));
+  return { ok: true, profiles };
+}
+
 async function handleApi(req, res, url) {
   const method = req.method;
   const p = url.pathname;
@@ -699,6 +846,23 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, statusPayload());
   }
   if (method === "GET" && p === "/api/env") return sendJson(res, 200, { ok: true, env: envInfo() });
+  if (method === "GET" && p === "/api/deps/help") {
+    const e = envInfo();
+    return sendJson(res, 200, { ok: true, missing: envMissing(), help: { node: e.nodeHelp, pnpm: e.pnpmHelp, git: e.gitHelp } });
+  }
+  if (method === "POST" && p === "/api/deps/install") {
+    const b = await jsonBody(req);
+    try { return sendJson(res, 200, { ok: true, ...(await autoInstallTools(b && b.tools)) }); }
+    catch (e) { return sendError(res, 500, e.message); }
+  }
+  if (method === "POST" && p === "/api/deps/clone") {
+    try { return sendJson(res, 200, { ok: true, ...(await ensureHarnessRepo()) }); }
+    catch (e) { return sendError(res, 500, e.message); }
+  }
+  if (method === "POST" && p === "/api/onboard/ack") {
+    config.onboarded = true; saveConfig();
+    return sendJson(res, 200, { ok: true });
+  }
   if (method === "GET" && p === "/api/backups") return sendJson(res, 200, { ok: true, backups: listBackups() });
   if (method === "GET" && p === "/api/web") return sendJson(res, 200, { ok: true, web: webState() });
 
@@ -722,6 +886,22 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true, fix });
   }
 
+  if (method === "GET" && p === "/api/retry") {
+    try { return sendJson(res, 200, { ok: true, ...require("./retry").readRetryPolicy(resolveDshHome()) }); }
+    catch (e) { return sendError(res, 500, e.message); }
+  }
+  if (method === "POST" && p === "/api/retry") {
+    const b = await jsonBody(req);
+    try {
+      const r = require("./retry").writeRetryPolicy(resolveDshHome(), {
+        topKey: String((b && b.topKey) || ""),
+        providerId: String((b && b.providerId) || ""),
+        retryPolicy: b && b.retryPolicy,
+      });
+      return sendJson(res, 200, { ok: true, ...r });
+    } catch (e) { return sendError(res, 400, e.message); }
+  }
+
   if (method === "GET" && p === "/api/console") return sendJson(res, 200, { ok: true, console: consoleStatus() });
   if (method === "POST" && p === "/api/console/exec") {
     const b = await jsonBody(req);
@@ -731,6 +911,71 @@ async function handleApi(req, res, url) {
   if (method === "POST" && p === "/api/console/stop") {
     stopConsoleProcess();
     return sendJson(res, 200, { ok: true, console: consoleStatus() });
+  }
+
+  if (method === "GET" && p === "/api/plugins") {
+    try { return sendJson(res, 200, pluginsSummary()); }
+    catch (e) { return sendError(res, 500, e.message); }
+  }
+  // 搜索候选插件源：GET /api/plugins/search?sources=npm,github&q=<关键词>
+  if (method === "GET" && p === "/api/plugins/search") {
+    const q = String(url.searchParams.get("q") || "").trim();
+    if (!q) return sendError(res, 400, "缺少搜索关键词 q");
+    const sources = (url.searchParams.get("sources") || "npm,github").split(",").map((s) => s.trim()).filter(Boolean);
+    const cards = [];
+    await Promise.all([sources.includes("npm") ? searchNpm(q, cards) : Promise.resolve(), sources.includes("github") ? searchGithub(q, cards) : Promise.resolve()]);
+    return sendJson(res, 200, { ok: true, cards });
+  }
+  // profile：纯改 JSON 的同步操作
+  if (method === "POST" && p === "/api/plugins/profile/toggle") {
+    const b = await jsonBody(req);
+    const profile = String((b && b.profile) || ""), pkg = String((b && b.pkg) || "");
+    if (!profile || !pkg) return sendError(res, 400, "缺少 profile / pkg");
+    try {
+      const r = plugins.setProfilePluginEnabled(resolveDshHome(), { profile, pkg, enabled: b.enabled !== false });
+      return sendJson(res, 200, { ok: true, ...r, ...plugins.listProfilePlugins(resolveDshHome(), profile) });
+    } catch (e) { return sendError(res, 400, e.message); }
+  }
+  // profile：涉及 pnpm / CLI 的操作 → activeTask（防并发），结束返回最新列表
+  if (method === "POST" && p === "/api/plugins/profile/add") {
+    const b = await jsonBody(req);
+    const profile = String((b && b.profile) || ""), spec = String((b && b.packageSpec) || "").trim();
+    if (!profile || !spec) return sendError(res, 400, "缺少 profile / packageSpec");
+    if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
+    const t = await startTask(`安装 profile 插件 ${spec}`);
+    try {
+      if (pluginCliAvailable()) {
+        const code = await runPluginCli(["plugin", "--profile", profile, "add", spec], (l) => listenTask(t, l));
+        if (code !== 0) throw new Error(`dsh plugin add 失败 (exit=${code})，请查看上方日志恢复`);
+      } else {
+        listenTask(t, "[退化] 缺少 CLI 构建产物，改为直接编辑 package.json（需重启后手动 pnpm install）");
+        plugins.addProfilePluginDirect(resolveDshHome(), { profile, packageSpec: spec, bundle: b.bundle !== false });
+      }
+      // 用户明确取消 bundle 时，确保不进入 bundle 层（针对自带 dsh.bundle 声明的包）
+      if (b.bundle === false) {
+        try { plugins.setProfilePluginEnabled(resolveDshHome(), { profile, pkg: plugins.specToPkg(spec), enabled: false }); } catch { /* 依赖已按需处理 */ }
+      }
+      finishTask(t, true);
+      return sendJson(res, 200, { ok: true, profile, packageSpec: spec, ...plugins.listProfilePlugins(resolveDshHome(), profile) });
+    } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
+  }
+  if (method === "POST" && p === "/api/plugins/profile/remove") {
+    const b = await jsonBody(req);
+    const profile = String((b && b.profile) || ""), pkg = String((b && b.pkg) || "");
+    if (!profile || !pkg) return sendError(res, 400, "缺少 profile / pkg");
+    if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
+    const t = await startTask(`卸载 profile 插件 ${pkg}`);
+    try {
+      if (pluginCliAvailable()) {
+        const code = await runPluginCli(["plugin", "--profile", profile, "remove", pkg], (l) => listenTask(t, l));
+        if (code !== 0) throw new Error(`dsh plugin remove 失败 (exit=${code})，请查看上方日志恢复`);
+      } else {
+        listenTask(t, "[退化] 缺少 CLI 构建产物，改为直接编辑 package.json（需重启后手动 pnpm install）");
+        plugins.removeProfilePluginDirect(resolveDshHome(), { profile, pkg });
+      }
+      finishTask(t, true);
+      return sendJson(res, 200, { ok: true, profile, pkg, ...plugins.listProfilePlugins(resolveDshHome(), profile) });
+    } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
   }
 
   if (method === "POST" && p === "/api/config") {

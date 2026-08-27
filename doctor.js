@@ -1051,24 +1051,6 @@ function checkForUpdate(ctx, { noRemote = false } = {}) {
 
 /* ================= manager 自检（dsh_manager 形态保留的检查） ================= */
 
-function cachedRepositoryNames(home) {
-  const cacheRoot = path.join(home, "cache", "repository-plugins");
-  if (!exists(cacheRoot)) return [];
-  const names = [];
-  let entries;
-  try { entries = fs.readdirSync(cacheRoot); } catch { return []; }
-  for (const entry of entries) {
-    const marker = path.join(cacheRoot, entry, ".repository-cache.json");
-    if (!exists(marker)) continue;
-    try {
-      const { specifier } = JSON.parse(fs.readFileSync(marker, "utf8"));
-      const m = /^github:([^/\s]+)\/([^#\s]+)#/.exec(specifier);
-      if (m) names.push(`${m[1]}/${m[2]}`);
-    } catch { /* ignore */ }
-  }
-  return [...new Set(names)];
-}
-
 function checkManager(ctx) {
   const envFile = path.join(ctx.home, ".env");
   const envLines = readFileSafe(envFile, 64 * 1024)?.split(/\r?\n/) ?? [];
@@ -1115,22 +1097,6 @@ function checkManager(ctx) {
     const errors = lines.filter((l) => /ERROR|failed to load|ERR_[A-Z]|error:/i.test(l));
     if (errors.length === 0) report(ctx, "manager", "manager-web-log", true, `${webLogFile} 无错误行`, undefined);
     else report(ctx, "manager", "manager-web-log", false, `${webLogFile} 含 ${errors.length} 行错误；最近：${errors[errors.length - 1].trim().slice(0, 200)}`, "查看完整日志，修复根因后重启 dsh web");
-  }
-
-  // repository 插件：声明源 vs 安装缓存痕迹
-  const cordisText = readFileSafe(path.join(ctx.home, "cordis.patch.yml"), 64 * 1024);
-  if (cordisText !== undefined) {
-    const repoLines = String(cordisText).split(/\r?\n/)
-      .filter((l) => /^\s*-\s*['"]?github:/.test(l))
-      .map((l) => l.trim().replace(/^-\s*['"]?/, "").replace(/['"]\s*$/, ""));
-    if (repoLines.length) {
-      const declared = [];
-      for (const s of repoLines) { const m = /^github:([^/\s]+)\/([^#\s]+)#/.exec(s); if (m) declared.push(`${m[1]}/${m[2]}`); }
-      const installed = cachedRepositoryNames(ctx.home);
-      const missing = declared.filter((n) => !installed.includes(n));
-      if (missing.length) report(ctx, "manager", "manager-repository-plugins", false, `声明的 repository 源缺少安装缓存痕迹：${missing.join("、")}`, "可能未成功安装（commit 引用失效或依赖无法解析）；可清空 $DSH_HOME/cache/repository-plugins 后重启重装");
-      else report(ctx, "manager", "manager-repository-plugins", true, `声明的 repository 源均有安装缓存痕迹（${declared.length} 条）：${declared.join("、")}`, undefined);
-    }
   }
 
   // 仓库 git 状态可写
@@ -1222,7 +1188,7 @@ const KNOWN_TITLES = {
   "E7-dsh-in-path": "dsh 在 PATH", "E8-npmrc-workspace-flag": ".npmrc 安装开关", "P6-patch-name-space": "patch name 空格",
   "E9-storages-json-valid": "config JSON 合法性", "E11-settings-writable": "settings 可写性",
   "manager-credentials": "凭据 DEEPSEEK_API_KEY", "manager-credentials-chain": "凭据来源链",
-  "manager-settings": "配置 settings.yaml", "manager-web-log": "web 日志", "manager-repository-plugins": "repository 插件",
+  "manager-settings": "配置 settings.yaml", "manager-web-log": "web 日志",
   "manager-repo-git": "仓库 git 状态可写", "manager-home-writable": "数据目录可写",
 };
 function toFinding(ctx, r) {
@@ -1245,7 +1211,7 @@ const CHECKS = [
   "S0", "S1", "S2", "S6", "S7", "S9", "S10", "S8", "S11",
   "E7-dsh-in-path", "E8-npmrc-workspace-flag", "P6-patch-name-space", "E9-storages-json-valid", "E11-settings-writable",
   "manager-credentials", "manager-credentials-chain", "manager-settings", "manager-web-log",
-  "manager-repository-plugins", "manager-repo-git", "manager-home-writable",
+  "manager-repo-git", "manager-home-writable",
 ].map((id) => ({ id, title: KNOWN_TITLES[id] || id, level: LEVEL_MAP[id.split("-")[0].split("/")[0]] || "harness" }));
 
 /** 运行诊断并返回前端契约报告。ctx 应来自 buildContext(); only 可选，过滤 checkId。 */

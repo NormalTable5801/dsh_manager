@@ -1,193 +1,281 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>dsh_manager · DeepSeek Harness</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <div id="app">
-    <aside class="sidebar">
+    <button id="menuToggle" class="menu-toggle" aria-label="切换导航" aria-expanded="false">
+      <i data-lucide="menu" class="icon-menu"></i>
+      <i data-lucide="x" class="icon-close hidden"></i>
+    </button>
+
+    <aside id="sidebar" class="sidebar">
       <div class="brand">
-        <div class="brand-logo">DSH</div>
-        <div>
+        <div class="brand-logo">
+          <i data-lucide="layers" class="brand-icon"></i>
+        </div>
+        <div class="brand-text">
           <div class="brand-name">dsh_manager</div>
           <div class="brand-sub">DeepSeek Harness 管理</div>
         </div>
       </div>
-      <nav id="nav">
-        <button class="nav-item active" data-view="dashboard"><span class="ni-ic">▦</span>状态总览</button>
-        <button class="nav-item" data-view="launch"><span class="ni-ic">▶</span>启动 web</button>
-        <button class="nav-item" data-view="update"><span class="ni-ic">↻</span>更新升级</button>
-        <button class="nav-item" data-view="versions"><span class="ni-ic">↩</span>版本 / 回滚</button>
-        <button class="nav-item" data-view="backups"><span class="ni-ic">⛁</span>数据备份</button>
-        <button class="nav-item" data-view="env"><span class="ni-ic">▤</span>环境检查</button>
-        <button class="nav-item" data-view="doctor"><span class="ni-ic">♨</span>诊断 Doctor</button>
-        <button class="nav-item" data-view="console"><span class="ni-ic">⌘</span>控制台 Console</button>
-        <button class="nav-item" data-view="settings"><span class="ni-ic">⚙</span>设置</button>
+      <nav id="nav" class="nav" aria-label="主导航">
+        <button class="nav-item active" data-view="dashboard"><i data-lucide="layout-dashboard" class="ni-ic"></i><span>状态总览</span></button>
+        <button class="nav-item" data-view="launch"><i data-lucide="play-circle" class="ni-ic"></i><span>启动 web</span></button>
+        <button class="nav-item" data-view="update"><i data-lucide="refresh-cw" class="ni-ic"></i><span>更新升级</span></button>
+        <button class="nav-item" data-view="versions"><i data-lucide="git-branch" class="ni-ic"></i><span>版本管理</span></button>
+        <button class="nav-item" data-view="backups"><i data-lucide="database-backup" class="ni-ic"></i><span>数据备份</span></button>
+        <button class="nav-item" data-view="env"><i data-lucide="check-circle-2" class="ni-ic"></i><span>环境检查</span></button>
+        <button class="nav-item" data-view="doctor"><i data-lucide="stethoscope" class="ni-ic"></i><span>系统诊断</span></button>
+        <button class="nav-item" data-view="plugins"><i data-lucide="puzzle" class="ni-ic"></i><span>DSH插件</span></button>
+        <button class="nav-item" data-view="console"><i data-lucide="terminal-square" class="ni-ic"></i><span>DSH终端</span></button>
+        <button class="nav-item" data-view="settings"><i data-lucide="settings-2" class="ni-ic"></i><span>其它设置</span></button>
       </nav>
       <div class="sidebar-foot">
-        <div id="busy" class="busy hidden"><span class="spinner"></span><span id="busyText">任务进行中…</span></div>
+        <div id="busy" class="busy hidden">
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="busyText">任务进行中…</span>
+        </div>
       </div>
     </aside>
+
+    <div id="backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
 
     <main class="main">
       <header class="topbar">
         <div class="topbar-title" id="viewTitle">状态总览</div>
         <div class="topbar-right">
-          <span id="connDot" class="conn">● 已连接</span>
+          <span id="connDot" class="conn"><span class="conn-dot"></span>已连接</span>
           <span id="topVersion" class="pill">—</span>
         </div>
       </header>
 
       <section id="view-dashboard" class="view active">
-        <h2>快速动作</h2>
-        <div class="card-row" id="quickActions">
-          <button class="action-btn primary" data-act="build">构建 Harness</button>
-          <button class="action-btn success" data-act="launch">启动 dsh web</button>
-          <button class="action-btn danger" data-act="stop">停止 dsh web</button>
-          <button class="action-btn" data-act="backup">立即备份数据</button>
-          <button class="action-btn" data-act="check">检查更新</button>
+        <div id="onboard" class="onboard hidden" role="note">
+          <div class="onboard-head"><i data-lucide="rocket" class="ct-icon"></i><span>首次使用？跟我三步起跑</span></div>
+          <ol class="onboard-steps">
+            <li>先确认下方「环境」卡片里 node / pnpm / git 都已就绪——缺失时可一键自动安装或取官方指引。</li>
+            <li>还没有 DeepSeek Harness 源码？在「环境」卡片点「获取 Harness 源码」，或到「其它设置」填仓库路径。</li>
+            <li>回顶部点「构建 Harness」，完成后到左侧「启动 web」点「启动 dsh web」即可打开界面。</li>
+          </ol>
+          <button class="action-btn small" data-act="onboardDismiss">知道了</button>
         </div>
 
-        <h2>状态一览</h2>
+        <div class="section-head">
+          <h2 class="section-title">快速动作</h2>
+          <p class="section-desc">常用运维操作一键直达</p>
+        </div>
+        <div class="card-row" id="quickActions">
+          <button class="action-btn primary" data-act="build"><i data-lucide="hammer"></i>构建 Harness</button>
+          <button class="action-btn success" data-act="launch"><i data-lucide="play"></i>启动 dsh web</button>
+          <button class="action-btn danger" data-act="stop"><i data-lucide="square"></i>停止 dsh web</button>
+          <button class="action-btn" data-act="backup"><i data-lucide="archive"></i>立即备份数据</button>
+          <button class="action-btn" data-act="check"><i data-lucide="cloud-download"></i>检查更新</button>
+        </div>
+
+        <div class="section-head">
+          <h2 class="section-title">状态一览</h2>
+          <p class="section-desc">核心指标实时监控</p>
+        </div>
         <div class="grid" id="statGrid"></div>
 
         <div class="card">
-          <div class="card-title">环境</div>
+          <div class="card-title"><i data-lucide="server" class="ct-icon"></i>环境与依赖</div>
           <div id="envStrip" class="env-strip"></div>
+          <div id="envActions" class="env-actions"></div>
         </div>
       </section>
 
       <section id="view-launch" class="view">
         <div class="card">
-          <div class="card-title">dsh web 进程</div>
+          <div class="card-title"><i data-lucide="activity" class="ct-icon"></i>dsh web 进程</div>
           <div id="launchStatus" class="status-box"></div>
           <div class="btn-row">
-            <button class="action-btn success" data-act="launch">启动 dsh web</button>
-            <button class="action-btn danger" data-act="stop">停止</button>
-            <button class="action-btn" data-act="restart" id="btnRestart" disabled>重启</button>
+            <button class="action-btn success" data-act="launch"><i data-lucide="play"></i>启动 dsh web</button>
+            <button class="action-btn danger" data-act="stop"><i data-lucide="square"></i>停止</button>
+            <button class="action-btn" data-act="restart" id="btnRestart" disabled><i data-lucide="rotate-ccw"></i>重启</button>
           </div>
           <p class="hint">启动前需先“构建”（生成 apps/cli/lib/bin.js 与 web 前端产物）。日志实时滚动显示。</p>
         </div>
         <div class="card">
-          <div class="card-title">运行日志 <span class="muted">（dsh web 实时输出）</span></div>
+          <div class="card-title"><i data-lucide="file-text" class="ct-icon"></i>运行日志 <span class="muted">（dsh web 实时输出）</span></div>
           <div class="terminal" id="webLog"><div class="terminal-empty">尚未启动 — 启动后这里显示实时日志</div></div>
         </div>
       </section>
 
       <section id="view-update" class="view">
         <div class="card">
-          <div class="card-title">检测更新</div>
+          <div class="card-title"><i data-lucide="cloud-download" class="ct-icon"></i>检测更新</div>
           <div id="updateInfo" class="status-box">点击下方按钮，从官方仓库拉取并检测新版本。</div>
           <div class="btn-row">
-            <button class="action-btn primary" data-act="check">检查更新</button>
-            <button class="action-btn success" data-act="upgrade" id="btnUpgrade" disabled>升级到最新版</button>
+            <button class="action-btn primary" data-act="check"><i data-lucide="refresh-cw"></i>检查更新</button>
+            <button class="action-btn success" data-act="upgrade" id="btnUpgrade" disabled><i data-lucide="arrow-up-circle"></i>升级到最新版</button>
           </div>
           <p class="hint">升级前会自动备份 <code>~/.dsh</code> 到 backups 目录。升级流程：git fetch → 切换最新 tag → pnpm install → pnpm build。</p>
         </div>
         <div class="card">
-          <div class="card-title">升级日志</div>
+          <div class="card-title"><i data-lucide="scroll-text" class="ct-icon"></i>升级日志</div>
           <div class="terminal" id="taskLog"></div>
         </div>
       </section>
 
       <section id="view-versions" class="view">
         <div class="card">
-          <div class="card-title">版本列表<span class="muted">（来自官方 git tags，需先拉取）</span></div>
+          <div class="card-title"><i data-lucide="git-branch" class="ct-icon"></i>版本列表<span class="muted">（来自官方 git tags，需先拉取）</span></div>
           <div class="btn-row">
-            <button class="action-btn" data-act="addremote" id="btnAddRemote">添加官方 remote</button>
-            <button class="action-btn" data-act="refreshVersions">拉取版本列表</button>
+            <button class="action-btn" data-act="addremote" id="btnAddRemote"><i data-lucide="plus"></i>添加官方 remote</button>
+            <button class="action-btn" data-act="refreshVersions"><i data-lucide="download-cloud"></i>拉取版本列表</button>
           </div>
           <p id="rangeInfo" class="muted"></p>
           <div id="versionList" class="version-list"></div>
         </div>
         <div class="card">
-          <div class="card-title">回滚 / 切换日志</div>
+          <div class="card-title"><i data-lucide="history" class="ct-icon"></i>回滚 / 切换日志</div>
           <div class="terminal" id="taskLogV"></div>
         </div>
       </section>
 
       <section id="view-backups" class="view">
         <div class="card">
-          <div class="card-title">数据备份<code id="homePath"></code></div>
+          <div class="card-title"><i data-lucide="database-backup" class="ct-icon"></i>数据备份<code id="homePath"></code></div>
           <div class="btn-row">
-            <button class="action-btn primary" data-act="backup">立即备份</button>
+            <button class="action-btn primary" data-act="backup"><i data-lucide="archive"></i>立即备份</button>
             <label class="checkbox"><input type="checkbox" id="optOverwrite" /> 覆盖同名旧备份</label>
             <span class="spacer"></span>
-            <button class="action-btn small" data-act="backupRefresh">刷新</button>
+            <button class="action-btn small" data-act="backupRefresh"><i data-lucide="refresh-cw"></i>刷新</button>
           </div>
-          <table class="table">
-            <thead><tr><th>备份</th><th>时间</th><th>版本</th><th>大小</th><th>文件数</th><th>操作</th></tr></thead>
-            <tbody id="backupRows"></tbody>
-          </table>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>备份</th><th>时间</th><th>版本</th><th>大小</th><th>文件数</th><th>操作</th></tr></thead>
+              <tbody id="backupRows"></tbody>
+            </table>
+          </div>
           <p class="hint">还原会覆盖当前数据目录；默认先对其做安全性备份（可在设置关闭）。建议还原前先停止 dsh web。</p>
         </div>
       </section>
 
       <section id="view-env" class="view">
         <div class="card">
-          <div class="card-title">环境检测</div>
+          <div class="card-title"><i data-lucide="check-circle-2" class="ct-icon"></i>环境检测</div>
           <div id="envDetail" class="env-grid"></div>
           <p class="hint">Node 需满足 <code>^22.19.x</code> 或 <code>24.x</code>；pnpm 与 git 用于构建/升级。</p>
         </div>
         <div class="card">
-          <div class="card-title">仓库 Git 状态</div>
+          <div class="card-title"><i data-lucide="git-commit" class="ct-icon"></i>仓库 Git 状态</div>
           <div id="gitState" class="status-box"></div>
         </div>
       </section>
 
       <section id="view-doctor" class="view">
         <div class="card">
-          <div class="card-title">诊断 Doctor<span class="muted">（移植自 dsh-doctor，flutter-doctor 风格，已做 Windows 适配）</span></div>
+          <div class="card-title"><i data-lucide="stethoscope" class="ct-icon"></i>诊断 Doctor<span class="muted">（移植自 dsh-doctor，flutter-doctor 风格，已做 Windows 适配）</span></div>
           <div class="btn-row">
-            <button class="action-btn primary" data-act="doctorRun">运行全部检查</button>
-            <button class="action-btn" data-act="doctorFixSettings">修复设置 settings.yaml</button>
-            <button class="action-btn" data-act="doctorFixKey">补写 DEEPSEEK_API_KEY</button>
+            <button class="action-btn primary" data-act="doctorRun"><i data-lucide="stethoscope"></i>运行全部检查</button>
+            <button class="action-btn" data-act="doctorFixSettings"><i data-lucide="file-cog"></i>修复设置 settings.yaml</button>
+            <button class="action-btn" data-act="doctorFixKey"><i data-lucide="key"></i>补写 DEEPSEEK_API_KEY</button>
             <span class="spacer"></span>
             <span id="doctorSummary" class="pill">—</span>
           </div>
-          <p class="hint">安装级检查（Node/git/pnpm/凭据/仓库/git hooks）+ harness 级检查（settings/sessions/凭据链/web 日志/repository 插件）。修复遵循“诚实原则”：settings 自动备份重建，凭据输入后写入，其余只给指引不越权改动。</p>
+          <p class="hint">安装级检查（Node/git/pnpm/凭据/仓库/git hooks）+ harness 级检查（settings/sessions/凭据链/web 日志）。修复遵循“诚实原则”：settings 自动备份重建，凭据输入后写入，其余只给指引不越权改动。</p>
         </div>
         <div class="card">
-          <div class="card-title">检查结果</div>
+          <div class="card-title"><i data-lucide="clipboard-list" class="ct-icon"></i>检查结果</div>
           <div id="doctorResult" class="doctor-list"><div class="muted">点击“运行全部检查”查看诊断报告。</div></div>
         </div>
       </section>
 
       <section id="view-console" class="view">
         <div class="card">
-          <div class="card-title">dsh 命令控制台</div>
+          <div class="card-title"><i data-lucide="terminal-square" class="ct-icon"></i>dsh 命令控制台</div>
           <div class="console-row">
             <input id="consoleCmd" type="text" placeholder="dsh doctor  ·  dsh --help  ·  dsh web" spellcheck="false" autocomplete="off" />
-            <button class="action-btn primary" data-act="consoleRun">运行</button>
-            <button class="action-btn danger" data-act="consoleStop">停止</button>
+            <button class="action-btn primary" data-act="consoleRun"><i data-lucide="play"></i>运行</button>
+            <button class="action-btn danger" data-act="consoleStop"><i data-lucide="square"></i>停止</button>
             <span class="spacer"></span>
             <span id="consoleState" class="pill">—</span>
           </div>
           <p class="hint">在仓库目录下以 <code>node apps\cli\lib\bin.js &lt;参数&gt;</code> 执行（等价 <code>dsh</code>），仅接受 <code>dsh</code> 开头的命令，输入后回车即可运行。</p>
         </div>
         <div class="card">
-          <div class="card-title">输出 <span class="muted">（实时回显）</span></div>
+          <div class="card-title"><i data-lucide="monitor" class="ct-icon"></i>输出 <span class="muted">（实时回显）</span></div>
           <div class="terminal" id="consoleOut"><div class="terminal-empty">输入 dsh 命令回车，输出将实时显示在这里。</div></div>
+        </div>
+      </section>
+
+      <section id="view-plugins" class="view">
+        <div class="card">
+          <div class="card-title"><i data-lucide="puzzle" class="ct-icon"></i>Profile 插件<span class="muted">（组合包 bundle · 官方唯一插件形态）</span></div>
+          <p class="hint" style="margin-top:0">写入 <code>profiles/&lt;name&gt;/package.json</code> 的 <code>dependencies</code> 与 <code>dsh.profile.bundles</code>。添加/卸载会调用内置 <code>dsh plugin</code>（自动 <code>pnpm install</code> 并面对齐 bundle 层）。修改后需<b>重启 dsh web</b> 生效。</p>
+          <div class="console-row">
+            <select id="profSel"></select>
+            <button class="action-btn primary" data-act="profAdd"><i data-lucide="plus"></i>添加插件</button>
+            <button class="action-btn" data-act="pluginsRefresh"><i data-lucide="refresh-cw"></i>刷新</button>
+            <span class="spacer"></span>
+            <span class="muted" id="profPath" style="font-size:12px"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>包名</th><th>类型</th><th>启用 bundle</th><th>操作</th></tr></thead>
+              <tbody id="profRows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><i data-lucide="scroll-text" class="ct-icon"></i>操作日志 <span class="muted">（添加/卸载 profile 插件）</span></div>
+          <div class="terminal" id="pluginLog"><div class="terminal-empty">暂无任务输出。</div></div>
+          <div class="btn-row">
+            <span class="muted" style="font-size:12px">配置变更后请重启 dsh web 使插件生效：</span>
+            <span class="spacer"></span>
+            <button class="action-btn success" data-act="restart"><i data-lucide="rotate-ccw"></i>启动 / 重启 dsh web</button>
+          </div>
         </div>
       </section>
 
       <section id="view-settings" class="view">
         <div class="card">
-          <div class="card-title">设置<button class="action-btn small" data-act="saveConfig" id="btnSaveConfig">保存</button></div>
+          <div class="card-title flex-between">
+            <span><i data-lucide="settings-2" class="ct-icon"></i>设置</span>
+            <button class="action-btn small" data-act="saveConfig" id="btnSaveConfig"><i data-lucide="save"></i>保存</button>
+          </div>
           <div class="form">
-            <label>仓库路径(repoPath)<input id="cfgRepoPath" type="text" /></label>
-            <label>数据目录(dshHome，留空=默认 ~/.dsh)<input id="cfgDshHome" type="text" /></label>
-            <label>管理端口<input id="cfgPort" type="number" /></label>
-            <label>dsh web 端口(0=自动，>0 用于探活与识别访问地址)<input id="cfgWebPort" type="number" /></label>
-            <label>启动方式<select id="cfgLaunchMode"><option value="built">built（构建产物）</option><option value="source">source（tsx 源码）</option></select></label>
-            <label>启动 profile<input id="cfgLaunchProfile" type="text" /></label>
-            <label>官方 remote<input id="cfgRemote" type="text" /></label>
+            <label><span class="label-text">仓库路径 <span class="label-code">repoPath</span></span><input id="cfgRepoPath" type="text" /></label>
+            <label><span class="label-text">数据目录 <span class="label-code">dshHome</span>（留空=默认 ~/.dsh）</span><input id="cfgDshHome" type="text" /></label>
+            <label><span class="label-text">管理端口</span><input id="cfgPort" type="number" /></label>
+            <label><span class="label-text">dsh web 端口（0=自动，>0 用于探活与识别访问地址）</span><input id="cfgWebPort" type="number" /></label>
+            <label><span class="label-text">启动方式</span><select id="cfgLaunchMode"><option value="built">built（构建产物）</option><option value="source">source（tsx 源码）</option></select></label>
+            <label><span class="label-text">启动 profile</span><input id="cfgLaunchProfile" type="text" /></label>
+            <label><span class="label-text">官方 remote</span><input id="cfgRemote" type="text" /></label>
             <label class="checkbox"><input type="checkbox" id="cfgAutoBackup" /> 升级/回滚前自动备份 .dsh</label>
             <label class="checkbox"><input type="checkbox" id="cfgSafety" /> 还原前做安全性备份</label>
-            <label>保留备份数量上限<input id="cfgMaxBackups" type="number" /></label>
+            <label><span class="label-text">保留备份数量上限</span><input id="cfgMaxBackups" type="number" /></label>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="repeat" class="ct-icon"></i>LLM 重试策略 Retry Policy</div>
+          <p class="hint">写入 <code>$DSH_HOME/settings.yaml</code> 的 <code>llm-pi-ai.providers.&lt;id&gt;.retryPolicy</code>（或顶层 provider 段）。由 harness 的 <code>dsh-llm-retry</code> 生效，修改后需重启 dsh web。默认 normal：500ms→10s 有界退避、±10% 抖动、重试 5 次。</p>
+          <div class="form">
+            <label><span class="label-text">提供方 Provider</span>
+              <select id="rpProvider"></select>
+            </label>
+            <label><span class="label-text">模式 mode</span>
+              <select id="rpMode"><option value="normal">normal（仅重试可重试错误码，推荐）</option><option value="always">always（任何失败都重试）</option></select>
+            </label>
+            <label><span class="label-text">初始重试间隔 initialDelayMs(ms)</span><input id="rpInitial" type="number" min="1" step="100" /></label>
+            <label><span class="label-text">最大间隔 maxDelayMs(ms)</span><input id="rpMax" type="number" min="1" step="100" /></label>
+            <label><span class="label-text">抖动比例 jitterRatio(0~1)</span><input id="rpJitter" type="number" min="0" max="1" step="0.05" /></label>
+            <label><span class="label-text">最大重试次数 maxRetries（normal 模式）</span><input id="rpMaxRetries" type="number" min="0" step="1" /></label>
+            <label class="wide"><span class="label-text">可重试错误码 retryableCodes（逗号分隔，normal 模式）</span><input id="rpCodes" type="text" placeholder="EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT" /></label>
+          </div>
+          <div class="btn-row">
+            <button class="action-btn primary" data-act="retrySave" id="btnRetrySave"><i data-lucide="save"></i>保存重试策略</button>
+            <button class="action-btn" data-act="retryRefresh"><i data-lucide="refresh-cw"></i>刷新</button>
+            <span class="spacer"></span>
+            <span id="rpStatus" class="pill">—</span>
           </div>
         </div>
       </section>
@@ -195,11 +283,14 @@
     </main>
   </div>
 
-  <div id="modal" class="modal hidden">
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card">
-      <div class="modal-title" id="modalTitle">确认</div>
+      <div class="modal-header">
+        <div class="modal-title" id="modalTitle">确认</div>
+        <button class="modal-close" id="modalClose" aria-label="关闭"><i data-lucide="x"></i></button>
+      </div>
       <div class="modal-body" id="modalBody"></div>
-      <div class="btn-row">
+      <div class="btn-row modal-footer">
         <button class="action-btn" id="modalCancel">取消</button>
         <button class="action-btn primary" id="modalOk">确认</button>
       </div>
@@ -208,6 +299,7 @@
 
   <div id="toasts" class="toasts"></div>
 
+  <script src="./lib/lucide.min.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
