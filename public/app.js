@@ -38,6 +38,13 @@ const fmtDate = (iso) => {
   return isNaN(d) ? iso : d.toLocaleString("zh-CN", { hour12: false });
 };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// 版本号比较：a>b 返回 1，a<b 返回 -1，相等返回 0（忽略 v 前缀）
+const cmpVer = (a, b) => {
+  const p = (x) => (String(x || "").replace(/^dsh-?/i, "").replace(/^v/i, "")).split(".").map((n) => parseInt(n, 10) || 0);
+  const A = p(a), B = p(b);
+  for (let i = 0; i < 3; i++) { if ((A[i] || 0) !== (B[i] || 0)) return (A[i] || 0) > (B[i] || 0) ? 1 : -1; }
+  return 0;
+};
 
 function refreshIcons(root = document) {
   if (typeof lucide !== "undefined") {
@@ -372,11 +379,15 @@ function renderVersions(d) {
   list.innerHTML = S.versions.map((v) => {
     const isCur = v.v === cur || v.tag === cur;
     const isLatest = latest && v.tag === latest.tag;
+    const isNewer = !isCur && cmpVer(v.v, cur) > 0; // 比当前更高的版本应视为升级
+    const action = isNewer
+      ? `<button class="tag-btn upgrade" data-upgrade="${esc(v.tag)}">升级到此版</button>`
+      : `<button class="tag-btn" data-rollback="${esc(v.tag)}">回滚到此版</button>`;
     return `<div class="vrow ${isCur ? "cur" : ""}">
       <div class="vtag">${esc(v.tag)}</div>
       <div class="vmeta">${isCur ? '<span class="badge cur-badge">当前版本</span>' : ""} ${isLatest && !isCur ? '<span class="badge latest-badge">最新</span>' : ""}</div>
       <div>
-        ${isCur ? "" : `<button class="tag-btn" data-rollback="${esc(v.tag)}">回滚到此版</button>`}
+        ${isCur ? "" : action}
         <span class="muted" style="font-size:11px">当前版 ${esc(cur)}</span>
       </div>
     </div>`;
@@ -428,9 +439,26 @@ async function doUpgrade() {
 }
 
 $("#versionList").addEventListener("click", async (e) => {
-  const btn = e.target.closest("[data-rollback]");
+  const up = e.target.closest("[data-upgrade]");
+  const rb = e.target.closest("[data-rollback]");
+  const btn = up || rb;
   if (!btn) return;
-  const tag = btn.dataset.rollback;
+  const tag = (up || rb).dataset.upgrade || (up || rb).dataset.rollback;
+  if (up) {
+    const ok = await confirmBox({
+      title: "升级到该版本",
+      html: `将 Harness 升级到版本 <b>${esc(tag)}</b>。<br/><br/>流程：<code>git fetch</code> → 切换到该 tag → <code>pnpm install</code> → <code>pnpm build</code>。<br/><br/><i class="muted">操作前会自动备份数据目录。</i>`,
+      okLabel: "开始升级",
+    });
+    if (!ok) return;
+    setBusy(true, "正在升级…");
+    try {
+      await api("/api/upgrade", { method: "POST", body: { autoBackup: true, target: tag } });
+      toast("升级完成", "ok");
+      S.updateInfo = null; $("#btnUpgrade").disabled = true;
+    } catch (err) { toast(err.message, "err"); } finally { refresh(); }
+    return;
+  }
   const ok = await confirmBox({
     title: "回滚版本",
     html: `确定切换到版本 <b>${esc(tag)}</b> 吗？<br/><br/>这会在仓库内执行 <code>git checkout</code> + 重新构建。操作前会自动备份数据目录。<br/><br/><span class="warn-title">注意：</span> 这是破坏性操作，请确认仓库无未提交改动。`,

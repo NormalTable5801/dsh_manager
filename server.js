@@ -529,6 +529,11 @@ async function build(tagRef, tl) {
   tl("pnpm install ...");
   let code = await run({ cmd: "pnpm", args: ["install"], cwd: config.repoPath, label: "pnpm", onLine: tl });
   if (code !== 0) throw new Error(`pnpm install 失败 (exit=${code})`);
+  // 版本切换后 git checkout 不会清除被忽略的旧 lib 构建产物，残留产物会污染启动与增量构建，
+  // 因此每次构建前先 pnpm clean（只删生成物，保留 node_modules，store 复用不重复下载）。
+  tl("pnpm clean（清理旧构建产物）...");
+  code = await run({ cmd: "pnpm", args: ["clean"], cwd: config.repoPath, label: "pnpm", onLine: tl });
+  if (code !== 0) throw new Error(`pnpm clean 失败 (exit=${code})`);
   tl("pnpm build ...");
   code = await run({ cmd: "pnpm", args: ["run", "build"], cwd: config.repoPath, label: "pnpm", onLine: tl });
   if (code !== 0) throw new Error(`pnpm build 失败 (exit=${code})`);

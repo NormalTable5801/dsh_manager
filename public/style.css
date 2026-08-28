@@ -252,6 +252,8 @@ code { background: var(--input); border: 1px solid var(--border); border-radius:
 .tag-btn:hover { color: var(--foreground); border-color: var(--primary); background: rgba(47,125,247,.08); }
 .tag-btn.danger { color: var(--state-error); border-color: var(--state-error-border); }
 .tag-btn.danger:hover { background: var(--state-error-bg); border-color: var(--state-error); }
+.tag-btn.upgrade { color: var(--primary); border-color: var(--primary); }
+.tag-btn.upgrade:hover { background: rgba(47,125,247,.08); border-color: var(--primary); }
 
 /* ---------- form ---------- */
 .form { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 20px; }
