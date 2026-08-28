@@ -3,14 +3,19 @@
 </h1>
 
 <p align="center">
-  <a href="./README.md">简体中文</a> ·
-  <a href="./README.en.md"><b>English</b></a>
+  <img alt="Node.js" src="https://img.shields.io/badge/node.js-v22.19%20%7C%2024-339933?style=flat-square&logo=node.js&logoColor=white" />
+  <img alt="license" src="https://img.shields.io/badge/license-BSD--3--Clause-blue?style=flat-square" />
+</p>
+
+<p align="center">
+  <a href="./README.md"><b>简体中文</b></a> ·
+  <a href="./README.en.md">English</a>
 </p>
 
 <p align="center">
   <strong>A local web admin console for DeepSeek Harness</strong> &mdash; zero dependencies, no <code>npm install</code>, runs only on your machine.
   One-click pnpm build &amp; hosting of dsh web, update detection &amp; version rollback, <code>~/.dsh</code> backup/restore,
-  a built-in diagnostic Doctor, a command console, plus <strong>auto dependency detection with guided setup</strong> made for first-time users.
+  a built-in diagnostic Doctor, a command console, plus **dependency auto-detection + one-click install + guided setup** made for first-time users.
 </p>
 
 > [!NOTE]
@@ -19,12 +24,11 @@
 ## Contents
 
 - [What is this?](#what-is-this)
-- [Prerequisites (read this first)](#prerequisites-read-this-first)
 - [Quick start](#quick-start)
 - [Feature overview](#feature-overview)
 - [Dependency auto-detection &amp; one-click setup](#dependency-auto-detection--one-click-setup)
-- [Runtime architecture / data separation](#runtime-architecture--data-separation)
-- [Diagnostic Doctor](#diagnostic-doctor)
+- [Technical notes](#technical-notes)
+- [DSH Diagnostics](#dsh-diagnostics)
 - [Command console](#command-console)
 - [Security](#security)
 - [Development](#development)
@@ -47,42 +51,21 @@ third-party runtime dependencies and no separate deployment environment: **just 
 > name adopts the officially recommended "DSH" abbreviation).
 
 > [!CAUTION]
-> `dsh_manager` is a **local, personal-use tool**. By default it binds only to `127.0.0.1` &mdash; do not rebind to
-> `0.0.0.0` or expose it to the public internet. It may read/back up your real data directory `~/.dsh`
+> `dsh_manager` is a **local, personal-use tool**. By default it binds only to `127.0.0.1` &mdash; for safety do not
+> rebind to `0.0.0.0` or expose it to the public internet. The project reads/backs up your real data directory `~/.dsh`
 > (conversations, plugin configs and credentials). **Never** add `backups/`, `logs/`, `config.json` or `.env`
 > to version control (`.gitignore` already ignores them).
 
-## Prerequisites (read this first)
-
-`dsh_manager` itself is zero-dependency, but the **DeepSeek Harness it manages** needs a toolchain. Check the following first:
-
-| Dependency | Requirement | If missing / out of date |
-| --- | --- | --- |
-| **Node.js** | `^22.19.x` or `24.x` | See "Dependency auto-detection" below: copy an install command or install automatically |
-| **pnpm** | any recent version (enabled via Node's bundled corepack) | `corepack enable`, or follow the pnpm website |
-| **git** | any recent version | See "Dependency auto-detection" |
-| **DeepSeek Harness source repo** | access to the official repository | See "Getting the Harness source" below |
-
-### Getting the Harness source
-
-The managed object is DeepSeek Harness (`https://github.com/deepseek-ai/deepseek-harness.git`). You just need one source clone:
-
-```bash
-# Clone into the parent of the dsh_manager directory (sibling folders, so it can be auto-discovered)
-cd <the directory one level above dsh_manager>
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-```
-
-You don't have to clone it by hand: **the web UI can do it for you** &mdash; see "Dependency auto-detection &amp; one-click setup" and "Quick start".
-The repo path can be set under **Settings &rarr; repo path**, or it is auto-detected when the repo is placed in the same parent folder
-(it is recognized by a root `package.json` with `name === "@deepseek-ai/dsh-root"`). Upgrades/rollbacks never touch your `~/.dsh`.
-
 ## Quick start
 
-1. Use "Dependency auto-detection" below to confirm node / pnpm / git are ready (you can auto-install them).
+1. **Prepare the environment**: dsh_manager itself only depends on **Node.js** (recommended `^22.19.x` or `24.x`).
+   After entering the UI, the **"Environment &amp; Dependencies"** card can detect and one-click install pnpm / git.
 2. Double-click `start.bat` (or run `node server.js`); the window opens `http://127.0.0.1:8730` automatically; first-time users see a three-step guide.
-3. Follow the guide: first "Get Harness source (clone)" to obtain the source repo (or set the repo path under **Settings** first).
-4. Back at the top, click **Build Harness** so that `apps/cli/lib/bin.js` and the web frontend artifacts exist.
+3. **Prepare the source repo**: if you **already have a dsh source repo**, place the dsh_manager project folder
+   **sibling** to the dsh repo folder (both under the same parent folder) and the program auto-discovers it. If you
+   **don't have the source yet**, follow the guide and click **"Get Harness source (clone)"** to clone it into the
+   sibling location, or set the path manually under **Settings &rarr; repo path**.
+4. Back at the top, click **Build Harness**; `apps/cli/lib/bin.js` and the web frontend artifacts will be built.
 5. Open **Launch web** on the left and click **Start dsh web**; the browser opens the dsh UI automatically.
 
 > If clicking `start.bat` makes the window flash and disappear (instead of staying in the running state), startup
@@ -106,44 +89,42 @@ The repo path can be set under **Settings &rarr; repo path**, or it is auto-dete
 
 ## Dependency auto-detection &amp; one-click setup
 
-Three things are built for first-time users whose machine has no environment yet:
+Made for first-time users whose machine has no environment yet:
 
-1. **Pre-launch check**: `start.bat` checks whether `node` exists; if it's missing it prints a friendly hint and opens the
-   official download page, so you're not lost when the manager can't even start.
+1. **Pre-launch check**: `start.bat` checks whether `node` exists; if it's missing it prints a hint and automatically
+   opens the official download page.
 2. **"Environment &amp; Dependencies" card in the overview**: shows node / pnpm / git status in real time. Each tool has
    a "copy install command" and an "open official download page" action.
 3. **Two-tier install (guided by default + optional auto-install)**:
    - **Guided (default)**: only provides copy-pasteable install commands and official links &mdash; never makes decisions
      for you, consistent with the "never modify your environment without permission" principle.
-   - **Auto-install (only when clicked)**: clicking "Auto-install missing dependencies" installs via `winget` (node / git)
+   - **Auto-install (optional)**: clicking "Auto-install missing dependencies" installs via `winget` (node / git)
      and `corepack` (pnpm), streamed live; this may change your system environment (node / git may require admin rights).
    - When the repo is missing, a "Get Harness source (clone)" button appears &mdash; one click `git clone`s the official
-     repo and connects it as the repo path (**it does not auto-build**; build manually via **Build Harness** at the top).
+     repo and connects it as the repo path.
+   - **Build and run**: to build, just click **"Build Harness"** at the top.
 
-## Runtime architecture / data separation
+## Technical notes
 
-`dsh_manager` only manages and orchestrates; it does not participate in dsh's internals. It cooperates with two
-other things on your machine:
+`dsh_manager` only manages and orchestrates. Technical architecture diagram:
 
-```text
-  You (browser 127.0.0.1:8730)
-            │  1) start/stop/restart, live logs, console, diagnostic
-            ▼
-   ┌─────────────────────────────┐
-   │         dsh_manager         │   <─ this repo (standalone git repo)
-   │   server.js + doctor.js     │     read-only / controlled ops, never edits Harness source
-   └─────────────────────────────┘
-        │                │              │
-        │ git/pnpm/build │ node↘        │ robocopy backup / restore
-        ▼                ▼              ▼
-   Harness source repo  dsh web       ~/.dsh data dir
-   (apps/cli/lib/bin.js)(subprocess)  (conversations+plugins+creds+settings)
+```mermaid
+flowchart LR
+  U["You (browser 127.0.0.1:8730)"]
+  M["dsh_manager (this repo)<br/>server.js + doctor.js<br/>"]
+  R["Harness source repo<br/>(apps/cli/lib/bin.js)"]
+  W["dsh web (subprocess)"]
+  D["~/.dsh data dir<br/>(conversations + plugins + creds + settings)"]
+  U -->|"1) start/stop/restart, logs, console, diagnostics"| M
+  M -->|"git / pnpm / build"| R
+  M -->|"node"| W
+  M -->|"robocopy backup / restore"| D
 ```
 
-- The **Harness source repo** and this project are **two independent git repositories** (the source lives in a sibling
-  folder, e.g. the parent of dsh_manager). This project neither enters nor modifies Harness's commit history.
-- Upgrade/rollback only changes the source version and rebuilds; it **never touches** `~/.dsh`. All interactive data
-  lives in `~/.dsh`, so switching Harness versions does not affect your conversations or config.
+- The **Harness source repo** and this project are **two independent git repositories** (file-location note: place
+  the two repos in the same (sibling) folder).
+- Upgrade/rollback only changes the source version and rebuilds, **preserving** `~/.dsh`; all interactive data lives
+  in `~/.dsh`, so switching Harness versions does not affect your conversations or config.
 - dsh is a **pnpm workspace monorepo**; the whole "install &rarr; build &rarr; run web" chain relies on pnpm:
   `pnpm install` (all workspace deps) &rarr; `pnpm build` (produce `apps/cli/lib/bin.js` and `apps/web/dist`) &rarr; `pnpm dsh web`.
   The UI's "Build" equals the first two steps; "Start dsh web" runs the built artifact with node directly (equivalent to
@@ -152,9 +133,9 @@ other things on your machine:
 - `apps/cli` (CLI) and `apps/web` (built-in web) live in the same workspace: shared dependencies, unified commands, no
   extra install &mdash; another "zero extra deployment" on top of the zero-dep `dsh_manager` itself.
 
-## Diagnostic Doctor
+## DSH Diagnostics
 
-The built-in **Diagnostic Doctor inlines and rewrites** the community dsh-doctor's full diagnostic engine
+The built-in **System Diagnostics inlines and rewrites** the community dsh-doctor's full diagnostic engine
 **into `doctor.js`** (no external file linking), running by its three-layer design with a flutter-doctor style
 report (`✓ ok / ! warn / ✗ error`):
 
@@ -192,14 +173,16 @@ An embedded **Command Console** page for running `dsh` commands with real-time s
 
 ## Security
 
-- The server binds only to `127.0.0.1`; all commands are assembled from fixed internal commands plus strictly
-  validated arguments to avoid injection.
+- The server binds only to `127.0.0.1`; all commands are assembled from fixed internal commands and validated
+  arguments to avoid injection.
 - Console commands are restricted to the `dsh` prefix and passed as argv, never through a shell.
 - Dependency "auto-install" runs only after you click it and uses trusted package managers (winget / corepack); guided mode stays the default.
 - `.gitignore` ignores `backups/` (real `~/.dsh` data), `logs/`, `config.json` (machine-specific paths), `.env`,
   keys and editor temp files; **do not `git add -f`** them.
 - This is a local personal tool &mdash; be careful with restore / rollback / delete-backup actions; they all ask for
   confirmation by default.
+- This project is an open-source **BSD 3-Clause** project for learning purposes only. The code repository is provided
+  as-is, with no express or implied warranties about its quality; the project is not responsible for any loss caused by its use.
 
 ## Development
 
@@ -224,7 +207,6 @@ node server.js          # start the admin UI, browser opens http://127.0.0.1:873
 | `start.bat` flashes out | Usually a port conflict or node version mismatch; check Ctrl+C / window error |
 | "uncommitted changes" on upgrade/rollback | Harness working tree is dirty; it aborts and asks you to commit or restore first |
 | Want to fully clear data | Manage `~/.dsh` via **Backup / Restore**; do not delete the source directory by hand |
-| The guide keeps coming back | `onboarded` is false in `config.json`; click "Got it" to dismiss, or set it to `true` manually |
 
 ## License &amp; credits
 
@@ -238,4 +220,4 @@ node server.js          # start the admin UI, browser opens http://127.0.0.1:873
   the credential source chain (provider credential store) is a dsh_manager **own enhancement**.
   To satisfy clause 1 of BSD-3 for source redistribution, `doctor.js` also retains the **full original copyright
   notice, terms and disclaimer** at the end.
-- Manages [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git).
+- **DSH** is an abbreviation for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git).
