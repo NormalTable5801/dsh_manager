@@ -933,7 +933,7 @@ async function launchWeb(quiet) {
   setBusy(true, "正在启动 dsh web…");
   try { await api("/api/launch", { method: "POST" }); if (!quiet) toast("已启动 dsh web", "ok"); switchView("launch"); }
   catch (e) { toast(e.message, "err"); }
-  finally { refresh(); }
+  finally { refresh(); setBusy(false); }
 }
 async function stopWeb() {
   const st = S.status && S.status.web;
