@@ -1,14 +1,12 @@
 /* =====================================================================
  * dsh_manager / doctor.js
- * Harness 诊断引擎（纯融入、重写自 moonquake2004/dsh-doctor v0.4.3）。
+ * Harness 诊断引擎（纯融入、重写自 moonquake2004/dsh-doctor v0.4.4）。
  *
  * 本文件把上游 dsh-doctor 的完整诊断逻辑（离线）改写为 CommonJS 版并
  * 嵌进 dsh_manager，而非链接外部文件：
- *   - Layer A 内置检查：env（E1-E6/E10） / profile（P0-P14） / session（S0-S11 / 全会话扫描）
+ *   - Layer A 内置检查：env（E1-E6/E10） / profile（P0-P15） / session（S0-S11 / 全会话扫描）
  *   - Layer A 远程检查目录 catalog：声明式只读探测规则（内置 5 条 + 每 6h 拉取远端）
  *   - Layer B 版本检查：npm 上游版本 vs 本端口版本（仅提示，不自动更新）
- *   - manager 自检：dsh_manager 在“git 源码 + Windows”形态下保留的上游未覆盖检查
- *     （凭据 DEEPSEEK_API_KEY 及其来源链 / settings.yaml / web 日志 / repository 插件 / 仓库 git 状态）
  *
  * 零依赖，仅用 Node 内置模块。不执行远程代码（catalog 规则是数据、只读探测原语）。
  * 凭据只做“存在性/来源链”判定，绝不回显任何 key 的值。
@@ -19,17 +17,11 @@
  *                                           其中 findings: [{ checkId,title,level,severity,message,remediation,detail }]
  *                                            severity ∈ ok | warn | error | skip
  *   CHECKS                                  静态检查清单（checkId/title/level），同 checkList
- *   fixSettings / fixCredentials            （沿用）settings.yaml 与 DEEPSEEK_API_KEY 的安全修复
  *
  * ----------------------------------------------------------------------
  * 版权与许可：
  *   本文件的主体诊断引擎改写自社区同名项目 moonquake2004/dsh-doctor
  *     （MIT License，Copyright (c) 2026 moonquake2004），许可全文见文末。
- *   manager 自检部分（settings / web 日志 / repository 插件 / 仓库 git 状态）的诊断框架
- *     — report 结构、run/parseVersion 工具以及 fixSettings / fixCredentials 修复助手 —
- *     衍生自本项目先期移植自 coppynight/dsh-doctor（BSD-3-Clause）的实现；
- *     其中凭据来源链（含 provider 凭据存储判定、值决不回显）为该实现上的
- *     dsh_manager 自有增强，并非 coppynight 原样逻辑。BSD-3 许可全文亦见文末。
  * ===================================================================== */
 "use strict";
 
@@ -41,8 +33,8 @@ const { spawnSync, execFileSync } = require("child_process");
 
 /* ------------------------------- 常量 ------------------------------- */
 
-const PORTED_VERSION = "0.4.3";                                  // 对应上游版本，用于 Layer B 版本提示
-const PORTED_SOURCE = "moonquake2004/dsh-doctor v0.4.3";
+const PORTED_VERSION = "0.4.4";                                  // 对应上游版本，用于 Layer B 版本提示
+const PORTED_SOURCE = "moonquake2004/dsh-doctor v0.4.4";
 
 const STORAGE_ROW_TYPES = new Set(["text-chunks", "reasoning-chunks", "tool-call-chunks", "session"]);
 // S8：官方 KNOWN_SESSION_EVENT_TYPES（0.1.0-rc.6 内置回退；优先从安装的 dsh-session 解析）
@@ -77,6 +69,7 @@ const BUNDLED_CATALOG = {
 
 const catalogSeveritySeed = new Map([   // 上游：这些 id 的失败只算 warn，不翻退出码/健康红线
   ["E1-pnpm", "warn"], ["E3-node", "warn"], ["installed_bundle", "warn"], ["P13", "warn"], ["P14", "warn"],
+  ["P15", "error"],
 ]);
 
 /* ------------------------------- 工具 ------------------------------- */
@@ -86,13 +79,6 @@ function run(cmd, args) {
   return { status: r.status ?? (r.error ? 127 : -1), stdout: r.stdout || "", stderr: r.stderr || "" };
 }
 function exists(p) { try { return fs.existsSync(p); } catch { return false; } }
-function dirWritable(p) { try { fs.accessSync(p, fs.constants.W_OK); return true; } catch { return false; } }
-function readFileSafe(p, maxBytes) {
-  try {
-    const buf = fs.readFileSync(p);
-    return maxBytes && buf.length > maxBytes ? buf.subarray(0, maxBytes).toString("utf8") : buf.toString("utf8");
-  } catch { return undefined; }
-}
 function findCommand(cmd) {
   for (const w of process.platform === "win32" ? ["where"] : ["which"]) {
     const r = spawnSync(w, [cmd]);
@@ -669,11 +655,40 @@ function checkProfile(ctx, name) {
         same ? undefined : `同步安装版本：dsh plugin --profile ${name} update ${selfName}（或让 CLI 与 bundle 走同一安装方式）`);
     }
   } catch (e) {
-    report(ctx, "profile", "installed_bundle", false, `bundle 版本对比异常: ${e.message.slice(0, 60)}`, undefined);
-  }
-}
+	    report(ctx, "profile", "installed_bundle", false, `bundle 版本对比异常: ${e.message.slice(0, 60)}`, undefined);
+	  }
 
-/* ================= session 检查 ================= */
+	  // P15：关键文件 BOM 检测（#5176：package.json 被意外加 BOM 头导致 JSON 解析失败）
+	  // UTF-8 BOM = EF BB BF = '\uFEFF'，pnpm/node 解析 JSON 时不认识 BOM → 报错
+	  const bomTargets = [
+	    path.join(dir, "package.json"),
+	    path.join(dir, "cordis.patch.yml"),
+	    path.join(dir, "settings.yaml"),
+	  ];
+	  const configDir = path.join(dir, "config");
+	  if (exists(configDir)) {
+	    try {
+	      for (const f of fs.readdirSync(configDir)) {
+	        if (f.endsWith(".json")) bomTargets.push(path.join(configDir, f));
+	      }
+	    } catch { /* skip */ }
+	  }
+	  const bomFiles = [];
+	  for (const f of bomTargets) {
+	    if (!exists(f)) continue;
+	    try {
+	      const head = fs.readFileSync(f, "utf8").slice(0, 1);
+	      if (head === "\uFEFF") bomFiles.push(f.replace(dir + path.sep, ""));
+	    } catch { /* skip */ }
+	  }
+	  if (bomFiles.length > 0) {
+	    report(ctx, "profile", "P15", false, `检测到 BOM 头（#5176：JSON/YAML 解析将失败）: ${bomFiles.join(", ")}`, '用文本编辑器打开文件，删除首字符（BOM/U+FEFF）后保存；或运行: sed -i "" "1s/^\xEF\xBB\xBF//" <file>');
+	  } else {
+	    report(ctx, "profile", "P15", true, "关键文件无 BOM 头", undefined);
+	  }
+	}
+
+	/* ================= session 检查 ================= */
 
 function checkSession(ctx, target) {
   const targetPath = target || (() => {
@@ -1049,74 +1064,6 @@ function checkForUpdate(ctx, { noRemote = false } = {}) {
   })();
 }
 
-/* ================= manager 自检（dsh_manager 形态保留的检查） ================= */
-
-function checkManager(ctx) {
-  const envFile = path.join(ctx.home, ".env");
-  const envLines = readFileSafe(envFile, 64 * 1024)?.split(/\r?\n/) ?? [];
-
-  // 凭据：.env 中 DEEPSEEK_API_KEY 存在性（含 provider-managed store ~/.dsh/.credentials.yaml 兜底判定）
-  const credStore = path.join(ctx.home, ".credentials.yaml");
-  const hasEnvKey = envLines.some((l) => /^\s*DEEPSEEK_API_KEY\s*=/.test(l));
-  const hasCredStore = exists(credStore);
-  if (!hasEnvKey && !hasCredStore) {
-    report(ctx, "manager", "manager-credentials", false, `在 ${envFile} 未检出 DEEPSEEK_API_KEY，且未见 provider 凭据存储 ${credStore}`, "在“诊断”页用“修复凭据”补写，或手动写入该 .env 后重启 dsh");
-  } else if (!hasEnvKey && hasCredStore) {
-    report(ctx, "manager", "manager-credentials", true, `DEEPSEEK_API_KEY 未在 ${envFile} 明文配置，但存在 provider 凭据存储 ${credStore}（值不回显）`, undefined);
-  } else {
-    report(ctx, "manager", "manager-credentials", true, `DEEPSEEK_API_KEY 已在 ${envFile} 配置（值不回显）`, undefined);
-  }
-  // 凭据来源链：进程环境 → cwd/.env → $DSH_HOME/.env → provider store。
-  // （dsh_manager 自有增强：coppynight 原实现仅查 .env；此处补入 provider 凭据存储层。）
-  const cwdEnvFile = path.join(process.cwd(), ".env");
-  const cwdEnvLines = readFileSafe(cwdEnvFile, 64 * 1024)?.split(/\r?\n/) ?? [];
-  const layers = [];
-  if (process.env.DEEPSEEK_API_KEY) layers.push("进程环境");
-  if (cwdEnvLines.some((l) => /^\s*DEEPSEEK_API_KEY\s*=/.test(l))) layers.push(`cwd/.env（${cwdEnvFile}）`);
-  if (hasEnvKey) layers.push(`$DSH_HOME/.env（${envFile}）`);
-  if (hasCredStore) layers.push(`provider 凭据存储（${credStore}）`);
-  if (layers.length === 0) report(ctx, "manager", "manager-credentials-chain", false, "没有任何一层提供 DEEPSEEK_API_KEY（进程环境 → cwd/.env → $DSH_HOME/.env → provider store）", "在“诊断”页补写 $DSH_HOME/.env，或设置环境变量后重启");
-  else report(ctx, "manager", "manager-credentials-chain", true, `DEEPSEEK_API_KEY 由 ${layers.join("、")} 提供（不显示值）`, undefined);
-
-  // settings.yaml 完整性
-  const settingsFile = path.join(ctx.home, "settings.yaml");
-  const settingsText = readFileSafe(settingsFile, 64 * 1024);
-  if (settingsText === undefined) report(ctx, "manager", "manager-settings", false, `${settingsFile} 不存在——当前使用默认配置`, "在“诊断”页点击“修复设置”可写入最小合法配置");
-  else if (settingsText.trim().length === 0) report(ctx, "manager", "manager-settings", false, `${settingsFile} 为空——空配置可能拖垮 web 启动`, "在“诊断”页点击“修复设置”（自动备份并重建）");
-  else report(ctx, "manager", "manager-settings", true, `${settingsFile} 存在且非空（${settingsText.length} 字节）`, undefined);
-
-  // web 日志
-  let webLogFile = undefined;
-  for (const p of [path.join(ctx.home, "logs", "web.log"), path.join(ctx.home, "web.log")]) {
-    if (exists(p)) { webLogFile = p; break; }
-  }
-  if (!webLogFile) report(ctx, "manager", "manager-web-log", true, "暂无 web.log —— dsh web 尚未写日志", undefined);
-  else {
-    const text = readFileSafe(webLogFile, 512 * 1024);
-    const lines = String(text || "").split(/\r?\n/);
-    const errors = lines.filter((l) => /ERROR|failed to load|ERR_[A-Z]|error:/i.test(l));
-    if (errors.length === 0) report(ctx, "manager", "manager-web-log", true, `${webLogFile} 无错误行`, undefined);
-    else report(ctx, "manager", "manager-web-log", false, `${webLogFile} 含 ${errors.length} 行错误；最近：${errors[errors.length - 1].trim().slice(0, 200)}`, "查看完整日志，修复根因后重启 dsh web");
-  }
-
-  // 仓库 git 状态可写
-  if (ctx.repoPath && exists(path.join(ctx.repoPath, ".git"))) {
-    const writable = dirWritable(path.join(ctx.repoPath, ".git"));
-    if (!writable) report(ctx, "manager", "manager-repo-git", false, `仓库 .git 目录不可写：${path.join(ctx.repoPath, ".git")}`, "检查仓库目录写权限（可能是 sudo 安装残留导致属主异常）");
-    else report(ctx, "manager", "manager-repo-git", true, "仓库 .git 可写", undefined);
-  } else {
-    report(ctx, "manager", "manager-repo-git", true, "仓库不在 git 管理下（或路径未配置）", undefined);
-  }
-
-  // 数据目录可写（Windows 下不评估 POSIX 属主）
-  if (exists(ctx.home)) {
-    if (!dirWritable(ctx.home)) report(ctx, "manager", "manager-home-writable", false, `数据目录 ${ctx.home} 不可写`, "检查目录权限，或以有权限账户重启 dsh_manager");
-    else report(ctx, "manager", "manager-home-writable", true, `数据目录可写（${ctx.home}）；Windows 下不评估 POSIX 属主`, undefined);
-  } else {
-    report(ctx, "manager", "manager-home-writable", true, "数据目录尚不存在", undefined);
-  }
-}
-
 /* ================= 主流程 ================= */
 
 function buildContext(opts = {}) {
@@ -1150,7 +1097,6 @@ async function runChecks(ctx) {
   try { checkProfile(ctx, profile); } catch (e) { report(ctx, "profile", "P0", false, `profile 检查异常: ${e.message.slice(0, 100)}`); }
   try { checkSession(ctx); } catch (e) { report(ctx, "session", "S0", false, `session 检查异常: ${e.message.slice(0, 100)}`); }
   try { scanAllSessions(ctx); } catch (e) { report(ctx, "session", "S11", false, `全会话扫描异常: ${e.message.slice(0, 100)}`); }
-  try { checkManager(ctx); } catch (e) { report(ctx, "manager", "manager-checks", false, `manager 自检异常: ${e.message.slice(0, 100)}`); }
 
   // 远程目录（层 A）
   try {
@@ -1173,23 +1119,20 @@ async function runChecks(ctx) {
 /* -------- findings 转换（前端契约） -------- */
 
 const SECTION_TITLES = {
-  env: "环境", profile: "Profile", session: "会话", catalog: "检查目录", manager: "dsh_manager",
+  env: "环境", profile: "Profile", session: "会话", catalog: "检查目录",
 };
-const LEVEL_MAP = { env: "install", catalog: "install", profile: "harness", session: "harness", manager: "harness" };
+const LEVEL_MAP = { env: "install", catalog: "install", profile: "harness", session: "harness" };
 const KNOWN_TITLES = {
   "E1-node": "node 在 PATH", "E1-pnpm": "pnpm 在 PATH", "E1-zstd": "zstd 在 PATH", "E2-env": ".env 类型",
   "E3-node": "node 版本", "E4": "node-pty 原生模块", "E5": "存储 JSON 合法性", "E6": "锚点元检查", "E10-port-3080": "Web 端口 3080",
   "P0": "Profile 可解析", "P1": "bundle 可解析性", "P2": "id 冲突", "P3": "insert name 可解析性", "P4": "file: 依赖",
   "P5": "顶层 @deepseek-ai 重复", "P7": "patch YAML 结构", "P8": "adapter provider 冲突", "P9": "settings 依赖声明",
-  "P10": "客户端专属服务注入", "P11": "main 入口产物", "P13": "client 服务名冲突", "P14": "bin 可执行性",
+  "P10": "客户端专属服务注入", "P11": "main 入口产物", "P13": "client 服务名冲突", "P14": "bin 可执行性", "P15": "文件 BOM 检测",
   "installed_bundle": "installed_bundle 版本",
   "S0": "会话可读", "S1": "孤儿 tool_call", "S2": "未闭合 turn", "S6": "seq 连续性", "S7": "end-seed 重放",
   "S9": "zstd 容器", "S10": "sourceEventSeqs", "S8": "未知事件类型", "S11": "全会话扫描",
   "E7-dsh-in-path": "dsh 在 PATH", "E8-npmrc-workspace-flag": ".npmrc 安装开关", "P6-patch-name-space": "patch name 空格",
   "E9-storages-json-valid": "config JSON 合法性", "E11-settings-writable": "settings 可写性",
-  "manager-credentials": "凭据 DEEPSEEK_API_KEY", "manager-credentials-chain": "凭据来源链",
-  "manager-settings": "配置 settings.yaml", "manager-web-log": "web 日志",
-  "manager-repo-git": "仓库 git 状态可写", "manager-home-writable": "数据目录可写",
 };
 function toFinding(ctx, r) {
   const warn = ctx.catalogSeverity.get(r.id) === "warn";
@@ -1207,11 +1150,9 @@ function toFinding(ctx, r) {
 /** 静态检查清单（供 checkList / CHECKS 导出）。 */
 const CHECKS = [
   "E1-node", "E1-pnpm", "E1-zstd", "E2-env", "E3-node", "E4", "E5", "E6", "E10-port-3080",
-  "P0", "P1", "P2", "P3", "P4", "P5", "P7", "P8", "P9", "P10", "P11", "P13", "P14", "installed_bundle",
+  "P0", "P1", "P2", "P3", "P4", "P5", "P7", "P8", "P9", "P10", "P11", "P13", "P14", "P15", "installed_bundle",
   "S0", "S1", "S2", "S6", "S7", "S9", "S10", "S8", "S11",
   "E7-dsh-in-path", "E8-npmrc-workspace-flag", "P6-patch-name-space", "E9-storages-json-valid", "E11-settings-writable",
-  "manager-credentials", "manager-credentials-chain", "manager-settings", "manager-web-log",
-  "manager-repo-git", "manager-home-writable",
 ].map((id) => ({ id, title: KNOWN_TITLES[id] || id, level: LEVEL_MAP[id.split("-")[0].split("/")[0]] || "harness" }));
 
 /** 运行诊断并返回前端契约报告。ctx 应来自 buildContext(); only 可选，过滤 checkId。 */
@@ -1236,41 +1177,7 @@ async function buildReport(ctx, only) {
   };
 }
 
-/* ------------------------------- 修复（沿用） ------------------------------- */
-
-const MINIMAL_SETTINGS = "# dsh settings (restored by dsh_manager doctor)\n{}\n";
-function fixSettings(dshHome) {
-  const settingsFile = path.join(dshHome, "settings.yaml");
-  fs.mkdirSync(dshHome, { recursive: true });
-  const content = exists(settingsFile) ? readFileSafe(settingsFile) : undefined;
-  if (content !== undefined && content.trim().length > 0) {
-    return { action: "settings-restore", applied: false, message: `${settingsFile} 非空，无需修复` };
-  }
-  if (content !== undefined) {
-    const backup = settingsFile + ".doctor-bak";
-    try { fs.copyFileSync(settingsFile, backup); } catch {}
-    fs.writeFileSync(settingsFile, MINIMAL_SETTINGS, "utf8");
-    return { action: "settings-restore", applied: true, message: `已备份损坏文档到 ${backup} 并写入最小合法配置` };
-  }
-  fs.writeFileSync(settingsFile, MINIMAL_SETTINGS, "utf8");
-  return { action: "settings-restore", applied: true, message: `已创建最小合法 ${settingsFile}` };
-}
-/** 向 $DSH_HOME/.env 写入 DEEPSEEK_API_KEY（去重、值不回显）。Windows 无 chmod 语义，仅尽最大努力置 0600。 */
-function fixCredentials(dshHome, value) {
-  const envFile = path.join(dshHome, ".env");
-  const key = String(value || "").trim();
-  if (!key) return { action: "credentials-write", applied: false, message: "未提供 key —— 已跳过" };
-  fs.mkdirSync(dshHome, { recursive: true });
-  let existing = "";
-  try { existing = fs.readFileSync(envFile, "utf8"); } catch {}
-  const lines = existing.split(/\r?\n/).filter((l) => l.trim() !== "" && !/^\s*DEEPSEEK_API_KEY\s*=/.test(l));
-  lines.push(`DEEPSEEK_API_KEY=${key}`);
-  fs.writeFileSync(envFile, lines.join("\n") + "\n", "utf8");
-  try { fs.chmodSync(envFile, 0o600); } catch {}
-  return { action: "credentials-write", applied: true, message: `已将 DEEPSEEK_API_KEY 写入 ${envFile}（值不回显）` };
-}
-
-module.exports = { run, buildContext, buildReport, fixSettings, fixCredentials, CHECKS };
+module.exports = { run, buildContext, buildReport, CHECKS };
 
 /* =====================================================================
  * MIT License（本文件主体引擎改写自 moonquake2004/dsh-doctor）
@@ -1293,33 +1200,4 @@ module.exports = { run, buildContext, buildReport, fixSettings, fixCredentials, 
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * =====================================================================
- * BSD 3-Clause License（manager 自检的诊断框架衍生自本项目先期移植自 coppynight/dsh-doctor）
- * Copyright (c) 2026, dsh-external
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * 3. Neither the name of the copyright holder nor the names of its
- *    contributors may be used to endorse or promote products derived from
- *    this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  * ===================================================================== */

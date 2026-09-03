@@ -147,19 +147,9 @@ report (`✓ ok / ! warn / ✗ error`):
 - **Layer A remote check catalog:** declarative read-only probe rules (bundled copy + remote refresh every 6h;
   new checks take effect without reinstalling).
 - **Layer B version hint:** compares the ported version against the dsh-doctor upstream; hints only, never auto-updates.
-- **dsh_manager self-checks:** presence and source chain of the `DEEPSEEK_API_KEY` credential
-  (process env &rarr; cwd/.env &rarr; `~/.dsh/.env` &rarr; provider credential store; **existence only, never echoes the value**),
-  `settings.yaml`, web.log, repository-plugin install traces and repo git state.
-- **Honest repair principle:** when `settings` is missing/corrupt it backs up then writes a minimal valid config;
-  credentials are written to `~/.dsh/.env` only after you type them in; everything else emits precise,
-  copy-pasteable commands and does **not** modify your environment without permission.
 
 <sup>① Diagnostic engine written from [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor)
-(MIT License). The diagnostic framework of the dsh_manager self-checks (report structure, the
-`fixSettings`/`fixCredentials` repair helpers, etc.) derives from this project's earlier port of
-[`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor) (BSD-3-Clause, &copy; `dsh-external`);
-the credential source chain incl. the provider credential store is a dsh_manager **own enhancement**, not
-coppynight's original logic. Both original copyright and license texts are retained at the end of `doctor.js`.</sup>
+(MIT License). Its original copyright and license texts are retained at the end of `doctor.js`.</sup>
 
 ## Command console
 
@@ -215,9 +205,4 @@ node server.js          # start the admin UI, browser opens http://127.0.0.1:873
 - Its **Diagnostic Doctor's engine** is written from
   [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor) (MIT License, &copy; `moonquake2004`).
   To satisfy the MIT license, `doctor.js` names the source at the top and retains its license text at the end.
-- Its **dsh_manager self-checks** derive from this project's earlier port of
-  [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor) (BSD-3-Clause, &copy; `dsh-external`);
-  the credential source chain (provider credential store) is a dsh_manager **own enhancement**.
-  To satisfy clause 1 of BSD-3 for source redistribution, `doctor.js` also retains the **full original copyright
-  notice, terms and disclaimer** at the end.
 - **DSH** is an abbreviation for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git).

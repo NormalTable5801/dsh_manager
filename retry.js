@@ -136,6 +136,12 @@ function readRetryPolicy(home) {
       providers.push({ topKey, providerId: topKey, kind: "direct", retryPolicy: parseRetryPolicy(lines, i, topEnd) });
     }
   }
+  // 内置默认 deepseek：settings.yaml 未配置 llm-deepseek 的 retryPolicy 时，
+  // 始终暴露一个"未配置"的可保存 provider，避免重试策略页空白。
+  const hasDeepseekDirect = providers.some((p) => p.topKey === "llm-deepseek" && p.kind === "direct" && p.retryPolicy);
+  if (!hasDeepseekDirect) {
+    providers.push({ topKey: "llm-deepseek", providerId: "llm-deepseek", kind: "direct", isBuiltin: true, retryPolicy: null });
+  }
   return { file: settingsPath, providers };
 }
 
@@ -214,6 +220,14 @@ function writeRetryPolicy(home, { topKey, providerId, retryPolicy }) {
     if (!target && providerId === topKey) target = { start: i, end: topEnd, base: ln.indent };
     if (target) break;
   }
+  if (!target && providerId === topKey) {
+    // direct 模式（内置默认 deepseek 等）目标顶层段尚未存在 → 在文件末尾自动创建（保留其它内容）。
+    const block = [`${topKey}:`, ...buildRetryLines(2, { ...retryPolicy, backoff: b })];
+    const text = raw.endsWith(eol) ? raw : raw + eol;
+    fs.copyFileSync(settingsPath, settingsPath + ".retry-bak");
+    fs.writeFileSync(settingsPath, text + block.join(eol) + eol, "utf8");
+    return { file: settingsPath, provider: { topKey, providerId }, written: block.length, created: true };
+  }
   if (!target) throw new Error(`settings.yaml 中未找到 provider「${topKey}${providerId === topKey ? "" : "." + providerId}」，请先在 dsh web 的“设置 → 模型”中添加提供方`);
 
   const newBlock = buildRetryLines(target.base + 2, { ...retryPolicy, backoff: b });
@@ -236,4 +250,58 @@ function writeRetryPolicy(home, { topKey, providerId, retryPolicy }) {
   return { file: settingsPath, provider: { topKey, providerId }, written: newBlock.length };
 }
 
-module.exports = { readRetryPolicy, writeRetryPolicy, MODES, DEFAULT_RETRYABLE };
+/* ---------------- 通用段编辑（settings.yaml 结构化编辑器） ---------------- */
+
+/**
+ * 列出 settings.yaml 全部顶层段，每段保留原始文本（含注释/空行）。
+ * 返回 { file, sections: [{ key, text }] }
+ */
+function listTopSections(home) {
+  const settingsPath = path.join(home, "settings.yaml");
+  if (!fs.existsSync(settingsPath)) return { file: settingsPath, sections: [] };
+  const raw = fs.readFileSync(settingsPath, "utf8");
+  const lines = raw.split(/\r?\n/).map(parseLine);
+  const sections = [];
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (ln.empty || ln.isListItem || ln.indent !== 0 || ln.key == null) continue;
+    const end = blockEnd(lines, i);
+    sections.push({ key: ln.key, text: lines.slice(i, end).map((l) => l.raw).join("\n") });
+  }
+  return { file: settingsPath, sections };
+}
+
+/**
+ * 行级替换某顶层段（通用编辑器用）。写入前备份 settings.yaml.settings-editor-bak。
+ * @param {string} home 数据目录
+ * @param {string} key  顶层键
+ * @param {{ source: string }} arg 该段新内容（不含该键行，从次级行开始）
+ * @returns {{ file, key, written:number }}
+ */
+function writeSection(home, key, { source }) {
+  if (typeof key !== "string" || !/^[A-Za-z0-9_.-]+$/.test(key)) throw new Error("非法的顶层段 key");
+  if (typeof source !== "string" || !source.trim()) throw new Error("source 内容为空");
+  const settingsPath = path.join(home, "settings.yaml");
+  if (!fs.existsSync(settingsPath)) throw new Error("settings.yaml 不存在，请先运行 dsh（或 doctor 修复生成）");
+  const raw = fs.readFileSync(settingsPath, "utf8");
+  const lines = raw.split(/\r?\n/).map(parseLine);
+  const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+
+  let start = -1, end = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (ln.empty || ln.isListItem || ln.indent !== 0 || ln.key == null) continue;
+    if (ln.key === key) { start = i; end = blockEnd(lines, i); break; }
+  }
+  if (start < 0) throw new Error(`settings.yaml 中未找到顶层段「${key}」`);
+
+  const newBlock = String(source).replace(/\r?\n/g, "\n").split("\n");
+  const out = [lines.slice(0, start).map((l) => l.raw), newBlock, lines.slice(end).map((l) => l.raw)];
+  const text = out.flat().join(eol);
+
+  fs.copyFileSync(settingsPath, settingsPath + ".settings-editor-bak");
+  fs.writeFileSync(settingsPath, text, "utf8");
+  return { file: settingsPath, key, written: newBlock.length };
+}
+
+module.exports = { readRetryPolicy, writeRetryPolicy, listTopSections, writeSection, MODES, DEFAULT_RETRYABLE };

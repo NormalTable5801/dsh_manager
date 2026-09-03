@@ -16,63 +16,6 @@ const { spawn, spawnSync, exec } = require("child_process");
 const doctor = require("./doctor");
 const plugins = require("./plugins");
 
-/* ---------------------------------------------------------------
- * 插件候选源搜索（npm registry / GitHub）
- * 只读对外 HTTP 请求，用于把「可安装的 spec」搜出来给用户选择；
- * 真正的安装仍走现有 /api/plugins/profile/add（dsh plugin … add <spec>）。
- * --------------------------------------------------------------- */
-const NPM_SEARCH = "https://registry.npmjs.org/-/v1/search";
-const GITHUB_SEARCH = "https://api.github.com/search/repositories";
-const SEARCH_TIMEOUT_MS = 12000;
-
-async function _fetchSearch(url) {
-  const headers = { "User-Agent": "dsh-manager", "Accept": "application/vnd.github+json" };
-  const ghToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (ghToken) headers.Authorization = `Bearer ${ghToken}`;
-  const res = await fetch(url, { headers, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
-  if (!res.ok) throw new Error(`远端请求失败 HTTP ${res.status}${res.status === 429 || res.status === 403 ? "（GitHub 未认证限流 10 次/分钟，稍后再试或设置 GITHUB_TOKEN）" : ""}`);
-  return res.json();
-}
-
-/** 按关键词在 npm registry 搜索 → 追加 npm 候选卡片。失败时记一条带 error 的卡片。 */
-async function searchNpm(q, into) {
-  try {
-    const j = await _fetchSearch(`${NPM_SEARCH}?text=${encodeURIComponent(q)}&size=20`);
-    const seen = new Set();
-    for (const o of (j.objects || [])) {
-      const pkg = o.package || {};
-      if (!pkg.name || seen.has(pkg.name)) continue;
-      seen.add(pkg.name);
-      into.push({
-        source: "npm",
-        label: `${pkg.name}@${pkg.version || ""}`,
-        spec: `${pkg.name}@${pkg.version || ""}`,
-        description: pkg.description || "",
-        extra: "npm registry",
-        pnpmGate: false,
-      });
-    }
-  } catch (e) { into.push({ source: "npm", error: e.message }); }
-}
-
-/** 按关键词搜索 GitHub 仓库 → 追加 git 候选卡片。带 pnpm build 白名单提示。 */
-async function searchGithub(q, into) {
-  try {
-    const j = await _fetchSearch(`${GITHUB_SEARCH}?q=${encodeURIComponent(q)}&per_page=20`);
-    for (const it of (j.items || [])) {
-      into.push({
-        source: "github",
-        label: it.full_name,
-        spec: `github:${it.full_name}`,
-        description: it.description || "",
-        extra: `github · ${it.stargazers_count || 0}★`,
-        pnpmGate: true,
-        pnpmGateText: "git 源若被 pnpm 拦截构建，需在 profiles/<name>/pnpm-workspace.yaml 的 allowBuilds 加白名单后重装",
-      });
-    }
-  } catch (e) { into.push({ source: "github", error: e.message }); }
-}
-
 /* ------------------------------- 常量 ------------------------------- */
 
 const ROOT = __dirname;                  // dsh_manager 目录
@@ -251,6 +194,28 @@ function runCollect(cmd, args, opts = {}) {
     child.on("close", (code) => resolve({ code: code ?? 1, lines, out: lines.join("\n") }));
   });
 }
+/** 判断 git 输出是否为网络类瞬时错误（可重试），本地状态类错误不计入。 */
+function isGitNetworkError(out) {
+  return /Could not resolve host|unable to access|Failed to connect|Connection (refused|reset|closed by peer|timed out)|OpenSSL|SSL_?/i.test(String(out || ""))
+    || /Timed out|network is unreachable|Recv failure|Bad Gateway|504|502|rate limit/i.test(String(out || ""));
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * 对只读/拉取类 git 命令做自动重试：仅当命令失败且为网络类错误时，
+ * 以轻微指数退避重试（默认共 3 次尝试）。本地/状态类失败原样返回，
+ * 由调用方按原有语义抛错，避免掩盖真实问题。
+ */
+async function runGitWithRetry(fn, { tl, label, retries = 2, baseDelayMs = 1000 } = {}) {
+  for (let i = 0; i <= retries; i++) {
+    const r = await fn();
+    if (r.code === 0) return r;
+    if (!isGitNetworkError(r.out || "") || i === retries) return r;
+    const delay = baseDelayMs * 2 ** i;
+    tl && tl(`${label} 网络异常(exit=${r.code})，${delay}ms 后重试 …`);
+    await sleep(delay);
+  }
+  return { code: -1, out: "" };
+}
 function coreRef(repo) {
   const t = runSync("git", ["describe", "--tags", "--exact-match", "HEAD"], { cwd: repo });
   if (t.code === 0) return t.out.trim();
@@ -265,6 +230,35 @@ function packageVersion(repo) {
 function hasRemote(repo) {
   const r = runSync("git", ["remote"], { cwd: repo });
   return (r.out || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean).includes(OFFICIAL_REMOTE_NAME);
+}
+
+/** 取最近可达的 tag 作为“当前版本”基线（HEAD 不在任何 tag 可达点则 null）。 */
+function currentGitTag(repo) {
+  const r = runSync("git", ["describe", "--tags", "--abbrev=0"], { cwd: repo });
+  if (r.code === 0) { const t = (r.out || "").trim(); return t || null; }
+  return null;
+}
+
+/** 收集从 fromTag 到 toTag 的本地 git 变更（提交列表 + shortstat 统计）。目标标签缺失时按需 fetch。 */
+async function changelogBetween(repo, fromTag, toTag) {
+  const have = () => runSync("git", ["rev-parse", "--verify", "--quiet", toTag + "^{commit}"], { cwd: repo }).code === 0;
+  if (!have()) {
+    try { await fetchTag(toTag, () => {}); }
+    catch (e) { return { ok: false, error: `目标标签 ${toTag} 未在本地且拉取失败: ${e.message}` }; }
+  }
+  if (!have()) return { ok: false, error: `本地仍没有 ${toTag} 的提交对象` };
+  const logR = runSync("git", ["log", `${fromTag}..${toTag}`, "--oneline"], { cwd: repo });
+  if (logR.code !== 0) return { ok: false, error: `git log 失败: ${logR.out.slice(0, 200)}` };
+  const commits = (logR.out || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
+    const i = l.indexOf(" ");
+    return i > 0 ? { hash: l.slice(0, i), subject: l.slice(i + 1) } : { hash: l, subject: "" };
+  });
+  const statR = runSync("git", ["log", `${fromTag}..${toTag}`, "--shortstat"], { cwd: repo });
+  const stat = { files: 0, insertions: 0, deletions: 0 };
+  const statLines = (statR.out || "").split(/\r?\n/).filter(Boolean);
+  const m = (statLines[statLines.length - 1] || "").match(/(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/);
+  if (m) { stat.files = +m[1]; stat.insertions = +(m[2] || 0); stat.deletions = +(m[3] || 0); }
+  return { ok: true, from: fromTag, to: toTag, commits, stat };
 }
 
 /* ------------------------------- 任务 / SSE ------------------------------- */
@@ -492,7 +486,7 @@ async function ensureRemote(tl) {
  */
 async function remoteTags() {
   await ensureRemote(() => {});
-  const r = await runCollect("git", ["ls-remote", "--tags", OFFICIAL_REMOTE_NAME], { cwd: config.repoPath });
+  const r = await runGitWithRetry(() => runCollect("git", ["ls-remote", "--tags", OFFICIAL_REMOTE_NAME], { cwd: config.repoPath }), { tl: null, label: "git ls-remote" });
   if (r.code !== 0) throw new Error(`ls-remote 失败 (${r.code}): ${r.out.slice(0, 300)}`);
   const seen = new Set();
   for (const line of r.lines) {
@@ -512,8 +506,11 @@ function localTags() {
 async function fetchTag(tag, tl) {
   await ensureRemote(tl);
   tl(`拉取版本 ${tag} ...`);
-  const code = await run({ cmd: "git", args: ["fetch", OFFICIAL_REMOTE_NAME, `+refs/tags/${tag}:refs/tags/${tag}`, "--force"], cwd: config.repoPath, label: "git", onLine: tl });
-  if (code !== 0) throw new Error(`拉取 ${tag} 失败 (exit=${code})，请检查网络`);
+  const r = await runGitWithRetry(
+    () => runCollect("git", ["fetch", OFFICIAL_REMOTE_NAME, `+refs/tags/${tag}:refs/tags/${tag}`, "--force"], { cwd: config.repoPath }),
+    { tl, label: "git fetch" }
+  );
+  if (r.code !== 0) throw new Error(`拉取 ${tag} 失败 (exit=${r.code})，请检查网络`);
 }
 async function checkoutTag(t, tag, tl) {
   const clean = runSync("git", ["status", "--porcelain"], { cwd: config.repoPath });
@@ -880,16 +877,6 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { ok: true, checkList: doctor.CHECKS.map((c) => ({ id: c.id, title: c.title, level: c.level })), ...report });
     } catch (e) { return sendError(res, 500, e.message); }
   }
-  if (method === "POST" && p === "/api/doctor/fix") {
-    const b = await jsonBody(req);
-    let fix;
-    try {
-      if (b.target === "settings") fix = doctor.fixSettings(resolveDshHome());
-      else if (b.target === "credentials") fix = doctor.fixCredentials(resolveDshHome(), b.value || "");
-      else return sendError(res, 400, "未知修复目标（settings | credentials）");
-    } catch (e) { return sendError(res, 500, e.message); }
-    return sendJson(res, 200, { ok: true, fix });
-  }
 
   if (method === "GET" && p === "/api/retry") {
     try { return sendJson(res, 200, { ok: true, ...require("./retry").readRetryPolicy(resolveDshHome()) }); }
@@ -903,6 +890,18 @@ async function handleApi(req, res, url) {
         providerId: String((b && b.providerId) || ""),
         retryPolicy: b && b.retryPolicy,
       });
+      return sendJson(res, 200, { ok: true, ...r });
+    } catch (e) { return sendError(res, 400, e.message); }
+  }
+
+  if (method === "GET" && p === "/api/settings/sections") {
+    try { return sendJson(res, 200, { ok: true, ...require("./retry").listTopSections(resolveDshHome()) }); }
+    catch (e) { return sendError(res, 500, e.message); }
+  }
+  if (method === "POST" && p === "/api/settings/sections") {
+    const b = await jsonBody(req);
+    try {
+      const r = require("./retry").writeSection(resolveDshHome(), String((b && b.key) || ""), { source: String((b && b.text) || "") });
       return sendJson(res, 200, { ok: true, ...r });
     } catch (e) { return sendError(res, 400, e.message); }
   }
@@ -922,15 +921,6 @@ async function handleApi(req, res, url) {
     try { return sendJson(res, 200, pluginsSummary()); }
     catch (e) { return sendError(res, 500, e.message); }
   }
-  // 搜索候选插件源：GET /api/plugins/search?sources=npm,github&q=<关键词>
-  if (method === "GET" && p === "/api/plugins/search") {
-    const q = String(url.searchParams.get("q") || "").trim();
-    if (!q) return sendError(res, 400, "缺少搜索关键词 q");
-    const sources = (url.searchParams.get("sources") || "npm,github").split(",").map((s) => s.trim()).filter(Boolean);
-    const cards = [];
-    await Promise.all([sources.includes("npm") ? searchNpm(q, cards) : Promise.resolve(), sources.includes("github") ? searchGithub(q, cards) : Promise.resolve()]);
-    return sendJson(res, 200, { ok: true, cards });
-  }
   // profile：纯改 JSON 的同步操作
   if (method === "POST" && p === "/api/plugins/profile/toggle") {
     const b = await jsonBody(req);
@@ -946,7 +936,15 @@ async function handleApi(req, res, url) {
     const b = await jsonBody(req);
     const profile = String((b && b.profile) || ""), spec = String((b && b.packageSpec) || "").trim();
     if (!profile || !spec) return sendError(res, 400, "缺少 profile / packageSpec");
+    // 导入本地包/目录：spec 可指向 .tgz 包文件或已解压的插件目录，安装前先校验路径存在，避免走进 pnpm 才报错
+    if (/^(?:file|link):/i.test(spec) || path.isAbsolute(spec) || /^\.{1,2}[\\/]/.test(spec) || /\.tgz(?:#|$)/i.test(spec)) {
+      const localPath = path.resolve(spec.replace(/^[a-z]+:/i, ""));
+      if (!fs.existsSync(localPath)) return sendError(res, 400, `本地包/目录不存在：${spec}`);
+    }
     if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
+    // 记录安装前依赖，用于安装后探测「装了但没被当插件启用」的包
+    let beforeDeps = new Set();
+    try { beforeDeps = new Set(plugins.listProfilePlugins(resolveDshHome(), profile).dependencies || []); } catch { /* profile 尚未初始化，忽略 */ }
     const t = await startTask(`安装 profile 插件 ${spec}`);
     try {
       if (pluginCliAvailable()) {
@@ -961,7 +959,18 @@ async function handleApi(req, res, url) {
         try { plugins.setProfilePluginEnabled(resolveDshHome(), { profile, pkg: plugins.specToPkg(spec), enabled: false }); } catch { /* 依赖已按需处理 */ }
       }
       finishTask(t, true);
-      return sendJson(res, 200, { ok: true, profile, packageSpec: spec, ...plugins.listProfilePlugins(resolveDshHome(), profile) });
+      const after = plugins.listProfilePlugins(resolveDshHome(), profile);
+      const afterDeps = new Set(after.dependencies || []);
+      const enabled = new Set(after.plugins.map((p) => p.pkg));
+      // 探测新增且用户想启用、却没能进 bundle 层的包（多半不是 dsh 插件）
+      let notice = null;
+      if (b.bundle !== false) {
+        const added = [...afterDeps].filter((d) => !beforeDeps.has(d) && !enabled.has(d));
+        if (added.length) {
+          notice = `包「${added.join("、")}」已作为普通依赖安装，但未被识别为 dsh 插件，无法当作插件启用；如确认非插件可稍后卸载。`;
+        }
+      }
+      return sendJson(res, 200, { ok: true, profile, packageSpec: spec, notice, ...after });
     } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
   }
   if (method === "POST" && p === "/api/plugins/profile/remove") {
@@ -1027,6 +1036,19 @@ async function handleApi(req, res, url) {
       const newer = latest && cmpSemver(latest.v, current) > 0 ? tags.filter((x) => cmpSemver(x.v, current) > 0) : [];
       return sendJson(res, 200, { ok: true, current, latest: latest ? latest.tag : null, hasUpdate: newer.length > 0, newer, versions: tags });
     } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
+  }
+
+  if (method === "GET" && p === "/api/updates/changelog") {
+    try {
+      const to = safeId(url.searchParams.get("to"), TAG_RE);
+      if (!to) return sendError(res, 400, "缺少有效的目标版本 to");
+      const repo = config.repoPath;
+      const from = currentGitTag(repo);
+      if (!from) return sendError(res, 400, "无法确定当前版本基线的 git tag（当前 HEAD 不在任何 tag 可达点）");
+      const r = await changelogBetween(repo, from, to);
+      if (!r.ok) return sendError(res, 400, r.error);
+      return sendJson(res, 200, { ok: true, from: r.from, to: r.to, commits: r.commits, stat: r.stat });
+    } catch (e) { return sendError(res, 500, e.message); }
   }
 
   if (method === "POST" && p === "/api/remote/add") {

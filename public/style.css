@@ -197,6 +197,7 @@ code { background: var(--input); border: 1px solid var(--border); border-radius:
 .terminal div { white-space: pre-wrap; word-break: break-all; }
 .terminal .err { color: var(--state-error); }
 .terminal .ok { color: var(--state-success); }
+.terminal .warn { color: var(--state-warning); }
 .terminal-empty { color: var(--muted); }
 
 /* ---------- env ---------- */
@@ -306,22 +307,6 @@ code { background: var(--input); border: 1px solid var(--border); border-radius:
 }
 .modal-body .form-inline input:focus, .modal-body .form-inline select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px var(--ring-subtle); }
 .key-input { font-family: var(--font-mono); letter-spacing: 1px; }
-
-/* ---------- plugin search cards ---------- */
-.ps-card { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: var(--radius-md); margin: 0 0 8px; background: var(--input); cursor: pointer; border: 1px solid var(--border); transition: border-color .12s, background .12s; }
-.ps-card:hover { border-color: var(--border); background: var(--popover); }
-.ps-card.npm { border-left: 3px solid var(--state-success); }
-.ps-card.github { border-left: 3px solid var(--primary); }
-.ps-card input { margin-top: 2px; flex: 0 0 auto; accent-color: var(--primary); width: 16px; height: 16px; }
-.ps-card .pc-main { min-width: 0; flex: 1 1 auto; }
-.ps-card .pc-main > span { display: block; margin: 0; line-height: 1.35; }
-.ps-card .pc-name { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ps-card .pc-extra { font-size: 11.5px; color: var(--muted); }
-.ps-card .pc-desc { font-size: 12px; color: var(--foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ps-card .pc-warn { font-size: 11.5px; color: var(--state-warning); display: flex; align-items: center; gap: 5px; }
-.src-badge { font-size: 10px; text-transform: uppercase; font-weight: 700; padding: 2px 6px; border-radius: var(--radius-sm); }
-.src-badge.npm { background: var(--state-success-bg); color: var(--state-success); border: 1px solid var(--state-success-border); }
-.src-badge.github { background: var(--state-info-bg); color: var(--primary); border: 1px solid var(--state-info-border); }
 
 /* ---------- toasts ---------- */
 .toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 10px; z-index: 60; max-width: 420px; }

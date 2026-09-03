@@ -23,7 +23,15 @@ const S = {
   // 本会话内用户已手动关闭首次引导，避免后续轮询/SSE 再把它弹回来
   onboardDismissed: false,
   doctorRanAt: null,
+  // 拉版本/检查更新失败的去抖冷却时间戳，避免每 5 秒轮询反复弹错
+  versionsFailAt: 0,
+  updateFailAt: 0,
+  changelog: null,
+  settings: null,
+  settingsKey: -1,
 };
+// 失败去抖冷却区间（ms）：失败后在该窗口内不再由轮询自动重试
+const FAIL_COOLDOWN_MS = 30000;
 
 const fmtBytes = (n) => {
   if (!isFinite(n)) return "-";
@@ -40,10 +48,36 @@ const fmtDate = (iso) => {
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // 版本号比较：a>b 返回 1，a<b 返回 -1，相等返回 0（忽略 v 前缀）
 const cmpVer = (a, b) => {
-  const p = (x) => (String(x || "").replace(/^dsh-?/i, "").replace(/^v/i, "")).split(".").map((n) => parseInt(n, 10) || 0);
-  const A = p(a), B = p(b);
-  for (let i = 0; i < 3; i++) { if ((A[i] || 0) !== (B[i] || 0)) return (A[i] || 0) > (B[i] || 0) ? 1 : -1; }
-  return 0;
+  // 与后端 cmpSemver 保持一致：比较 major.minor.patch，再比较预发布段，
+  // 否则前三位相同的版本（如正式版 vs alpha）会被误判为相等。
+  const parseSemver = (s) => {
+    s = String(s || "").trim().replace(/^dsh-?/i, "").replace(/^v/i, "");
+    const pre = s.split("-")[1] || "";
+    const m = s.split("-")[0].split(".").map((n) => parseInt(n, 10));
+    return { major: m[0] || 0, minor: m[1] || 0, patch: m[2] || 0, pre };
+  };
+  const cmpPre = (pa, pb) => {
+    if (pa === pb) return 0;
+    if (!pa && pb) return 1;
+    if (pa && !pb) return -1;
+    const xa = pa.split("."), xb = pb.split(".");
+    for (let i = 0; i < Math.max(xa.length, xb.length); i++) {
+      const x = xa[i], y = xb[i];
+      if (x === undefined) return -1;
+      if (y === undefined) return 1;
+      const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+      if (nx && ny) { if (+x !== +y) return +x > +y ? 1 : -1; }
+      else if (nx) return 1;
+      else if (ny) return -1;
+      else if (x !== y) return x > y ? 1 : -1;
+    }
+    return 0;
+  };
+  const A = parseSemver(a), B = parseSemver(b);
+  if (A.major !== B.major) return A.major > B.major ? 1 : -1;
+  if (A.minor !== B.minor) return A.minor > B.minor ? 1 : -1;
+  if (A.patch !== B.patch) return A.patch > B.patch ? 1 : -1;
+  return cmpPre(A.pre, B.pre);
 };
 
 function refreshIcons(root = document) {
@@ -246,8 +280,8 @@ function renderStatus() {
   if (isView("settings")) renderConfigForm();
   $("#homePath").textContent = " → " + st.home + (st.homeSize ? `（${fmtBytes(st.homeSize)}）` : "");
   if (isView("backups")) renderBackups(st.backups);
-  if (isView("versions") && !S.versions.length) loadVersions(false);
-  if (isView("update") && S.updateInfo === null) checkUpdate(false);
+  if (isView("versions") && !S.versions.length && Date.now() - S.versionsFailAt > FAIL_COOLDOWN_MS) loadVersions(false);
+  if (isView("update") && S.updateInfo === null && Date.now() - S.updateFailAt > FAIL_COOLDOWN_MS) checkUpdate(false);
   renderGitState();
 }
 
@@ -342,7 +376,15 @@ function renderGitState() {
 /* ---------------- 任务日志 ---------------- */
 function renderTaskLogs() {
   const html = S.taskLines.length
-    ? S.taskLines.map((l) => `<div class="${/ERROR|失败|error:/i.test(l) ? "err" : /完成|成功|done/i.test(l) ? "ok" : ""}">${esc(l)}</div>`).join("")
+    ? S.taskLines.map((l) => {
+        // 分级着色：WARN 黄色、ERROR/错误 红色、成功 绿色。WARN 需优先于
+        // err 判断，否则 “[WARN] … error (23)” 这类重试提示会被误标为红色。
+        const cls = /WARN|warning/i.test(l) ? "warn"
+          : /ERROR|失败|错误|fatal|panic|error:|error\s*\(\s*\d/i.test(l) ? "err"
+          : /完成|成功|done|✓/i.test(l) ? "ok"
+          : "";
+        return `<div class="${cls}">${esc(l)}</div>`;
+      }).join("")
     : `<div class="terminal-empty">等待任务输出…</div>`;
   const alwaysScroll = (t) => { if (t) { t.innerHTML = html; t.scrollTop = t.scrollHeight; } };
   alwaysScroll($("#taskLog"));
@@ -368,7 +410,7 @@ async function loadVersions(fetchFirst) {
     const d = await api("/api/versions");
     renderVersions(d);
     if (S.status) { S.hasRemote = S.status.remoteConfigured; }
-  } catch (e) { toast(e.message, "err"); }
+  } catch (e) { S.versionsFailAt = Date.now(); toast(e.message, "err"); }
 }
 function renderVersions(d) {
   S.versions = d.versions || [];
@@ -404,12 +446,16 @@ async function checkUpdate(silent) {
     if (S.status) S.status.remoteConfigured = d.ok;
     const cur = d.current;
     renderVersions({ ...d, current: cur });
+    S.changelog = null;
+    const cc = $("#updateChangelogCard"); if (cc) cc.style.display = "none";
+    if ($("#btnChangelog")) $("#btnChangelog").disabled = true;
     const html = [];
     html.push(`<div class="l">当前版本: <b>v${esc(cur)}</b> &nbsp; 最新版本: <b>${d.latest ? esc(d.latest) : "—"}</b></div>`);
     if (!d.latest) html.push(`<div class="l muted">未获取到任何版本标签（请检查网络/remote）。</div>`);
     else if (d.hasUpdate) {
       html.push(`<div class="l warn">检测到可升级版本：${d.newer.slice(0, 5).map((x) => esc(x.tag)).join("、")} 等</div>`);
       $("#btnUpgrade").disabled = false;
+      if ($("#btnChangelog")) $("#btnChangelog").disabled = false;
     } else {
       html.push(`<div class="l ok">已是最新版本（或者更高，无需升级）。</div>`);
       $("#btnUpgrade").disabled = true;
@@ -418,6 +464,7 @@ async function checkUpdate(silent) {
     $("#updateInfo").innerHTML = html.join("");
     if (!silent) toast(d.hasUpdate ? "发现新版本，可升级" : "已是最新", d.hasUpdate ? "info" : "ok");
   } catch (e) {
+    S.updateFailAt = Date.now();
     $("#updateInfo").innerHTML = `<div class="l err">检查更新失败：${esc(e.message)}</div>`;
     if (!silent) toast(e.message, "err");
   }
@@ -436,6 +483,30 @@ async function doUpgrade() {
     await api("/api/upgrade", { method: "POST", body: { autoBackup: true, target: S.updateInfo.latest } });
     toast("升级完成", "ok");
   } catch (e) { toast(e.message, "err"); } finally { refresh(); }
+}
+
+/* ---------------- 升级前变更预览（A1） ---------------- */
+async function showChangelog() {
+  if (!S.updateInfo || !S.updateInfo.latest) return toast("请先检查更新", "err");
+  const to = S.updateInfo.latest;
+  $("#updateChangelog").innerHTML = `<div class="l muted">正在拉取 ${esc(to)} 的变更…</div>`;
+  try {
+    const d = await api("/api/updates/changelog?to=" + encodeURIComponent(to));
+    renderChangelog(d);
+  } catch (e) { toast(e.message, "err"); }
+}
+function renderChangelog(d) {
+  S.changelog = d;
+  const card = $("#updateChangelogCard"); if (!card) return;
+  card.style.display = "block";
+  $("#changelogRange").textContent = `（${esc(d.from)} → ${esc(d.to)}）`;
+  const st = d.stat || {};
+  const head = `<div class="l"><b>${st.files}</b> 个文件变更 · +${st.insertions} / −${st.deletions} · <b>${d.commits.length}</b> 次提交</div>`;
+  const list = d.commits.length
+    ? `<div style="max-height:320px;overflow:auto;margin-top:8px">` + d.commits.map((c) =>
+        `<div class="l" style="font-family:var(--font-mono);font-size:12px"><span style="color:#8a8f98">${esc(c.hash)}</span>  ${esc(c.subject)}</div>`).join("") + `</div>`
+    : `<div class="l muted">两版本间无提交（可能已是最新）。</div>`;
+  $("#updateChangelog").innerHTML = head + list;
 }
 
 $("#versionList").addEventListener("click", async (e) => {
@@ -559,10 +630,10 @@ function renderRetry() {
   const curIdx = current ? provs.indexOf(current) : 0;
   const cur = provs[curIdx];
   sel.innerHTML = provs.map((p, i) =>
-    `<option value="${i}" ${i === curIdx ? "selected" : ""}>${esc(p.providerId)}${p.kind === "pi-ai" ? " · " + esc(p.topKey) : ""}${p.retryPolicy ? " · 已配置" : ""}</option>`
+    `<option value="${i}" ${i === curIdx ? "selected" : ""}>${esc(p.providerId)}${p.kind === "pi-ai" ? " · " + esc(p.topKey) : ""}${p.isBuiltin ? " · 内置默认" : ""}${p.retryPolicy ? " · 已配置" : " · 未配置"}</option>`
   ).join("");
   S.retryProvider = { topKey: cur.topKey, providerId: cur.providerId };
-  fillRetryForm(cur.retryPolicy);
+  fillRetryForm(cur.retryPolicy, cur.isBuiltin);
 }
 function clearRetryForm() {
   $("#rpMode").value = "normal";
@@ -575,10 +646,12 @@ function clearRetryForm() {
   $("#rpStatus").className = "pill";
   syncRetryNormalFields();
 }
-function fillRetryForm(pol) {
+function fillRetryForm(pol, isBuiltin) {
   if (!pol) {
     clearRetryForm();
-    $("#rpStatus").textContent = "未配置（保存后写入 settings.yaml）";
+    $("#rpStatus").textContent = isBuiltin
+      ? "内置默认 deepseek · 未配置（保存后自动创建 llm-deepseek 段）"
+      : "未配置（保存后写入 settings.yaml）";
     $("#rpStatus").className = "pill warn";
     return;
   }
@@ -602,7 +675,7 @@ function onRetryProviderChange() {
   const p = provs[Number($("#rpProvider").value)];
   if (!p) return;
   S.retryProvider = { topKey: p.topKey, providerId: p.providerId };
-  fillRetryForm(p.retryPolicy);
+  fillRetryForm(p.retryPolicy, p.isBuiltin);
 }
 async function saveRetry() {
   if (!S.retryProvider) return toast("请先选择提供方", "err");
@@ -668,30 +741,6 @@ function renderDoctor(d) {
   }).join("") || '<div class="muted">无检查结果。</div>';
   if (S.doctorRanAt) box.insertAdjacentHTML("beforeend", `<div class="muted" style="margin-top:8px">上次运行：${fmtDate(new Date(S.doctorRanAt).toISOString())}</div>`);
   refreshIcons(box);
-}
-async function doctorFixSettings() {
-  const ok = await confirmBox({ title: "修复 settings.yaml", html: "为空/损坏的 settings.yaml<b>先备份为 .doctor-bak</b> 再写入最小合法配置（非空则不动）。", okLabel: "修复" });
-  if (!ok) return;
-  try {
-    const r = await api("/api/doctor/fix", { method: "POST", body: { target: "settings" } });
-    toast((r.fix.applied ? "已修复：\u200b" : "跳过：") + r.fix.message, r.fix.applied ? "ok" : "info");
-  } catch (e) { toast(e.message, "err"); }
-  runDoctor(true);
-}
-async function doctorFixKey() {
-  const out = await formModal({
-    title: "补写 DEEPSEEK_API_KEY",
-    fields: [
-      { name: "key", label: "DEEPSEEK_API_KEY", type: "password", placeholder: "sk-..." }
-    ],
-    okLabel: "写入",
-  });
-  if (!out || !out.key) return;
-  try {
-    const r = await api("/api/doctor/fix", { method: "POST", body: { target: "credentials", value: out.key } });
-    toast((r.fix.applied ? "已写入：\u200b" : "跳过：") + r.fix.message, r.fix.applied ? "ok" : "info");
-  } catch (e) { toast(e.message, "err"); }
-  runDoctor(true);
 }
 
 /* ---------------- 控制台 Console ---------------- */
@@ -782,11 +831,18 @@ async function profAdd() {
     const ok = $("#modalOk"), cancel = $("#modalCancel");
     $("#modalTitle").textContent = `添加 Profile 插件（profile: ${S.profSel}）`;
     $("#modalBody").innerHTML = `
-      <div style="display:flex;gap:8px;margin-bottom:12px">
-        <button class="action-btn small primary" type="button" id="modeSearch">搜索安装</button>
-        <button class="action-btn small" type="button" id="modeManual">手输 spec</button>
+      <div class="form-inline">
+        <label><span class="label-text">来源类型</span>
+          <select id="psType">
+            <option value="npm">npm 源包</option>
+            <option value="github">GitHub 仓库</option>
+            <option value="local">本地路径</option>
+          </select>
+        </label>
+        <label><span class="label-text">指向</span><input id="psSpec" type="text" placeholder="例如 @scope/pkg@^1.2.0"></label>
+        <label class="check"><input type="checkbox" id="psBundle" checked> 同时启用（加入 bundle 层）</label>
       </div>
-      <div id="psPane"></div>`;
+      <div style="margin-top:12px"><button class="action-btn success" id="psAddGo">安装</button></div>`;
     ok.textContent = "关闭"; cancel.textContent = "取消";
     ok.className = "action-btn";
     cancel.classList.remove("hidden");
@@ -807,93 +863,23 @@ async function profAdd() {
     ok.addEventListener("click", onOk);
     cancel.addEventListener("click", onCancel);
 
-    function showSearch() {
-      $("#modeSearch").classList.add("primary"); $("#modeManual").classList.remove("primary");
-      $("#psPane").innerHTML = `
-        <div class="form-inline">
-          <label><span class="label-text">关键词</span><input id="psQ" type="text" placeholder="包名 / owner·repo / 关键词" style="width:100%"></label>
-          <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
-            <label class="checkbox"><input type="checkbox" id="psSrcNpm" checked> npm</label>
-            <label class="checkbox"><input type="checkbox" id="psSrcGh" checked> GitHub</label>
-            <button class="action-btn primary" id="psGo">开始搜索</button>
-          </div>
-        </div>
-        <div id="psResults" style="margin-top:12px"></div>
-        <div id="psInstallWrap" style="display:none;margin-top:10px"><button class="action-btn success" id="psInstall">安装所选</button> <span class="muted" style="font-size:12px">可多选；git 源可能触发白名单提示</span></div>`;
-      refreshIcons($("#psPane"));
-      const doSearch = async () => {
-        const q = $("#psQ").value.trim(); if (!q) return toast("请输入关键词", "err");
-        const srcs = []; if ($("#psSrcNpm").checked) srcs.push("npm"); if ($("#psSrcGh").checked) srcs.push("github");
-        if (!srcs.length) return toast("请至少勾选一个来源", "err");
-        const res = $("#psResults"); res.innerHTML = `<div class="muted">正在搜索 ${srcs.join(" + ")} …</div>`;
-        try { const data = await api("/api/plugins/search?q=" + encodeURIComponent(q) + "&sources=" + encodeURIComponent(srcs.join(","))); renderSearchCards(data.cards || []); }
-        catch (e) { res.innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
-      };
-      $("#psGo").addEventListener("click", doSearch);
-      const q = $("#psQ"); q.focus();
-      q.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doSearch(); } });
-      if (!window._psResultBound) { $("#psResults").addEventListener("change", (e) => { if (e.target.matches("input[data-source]")) psSyncInstall(); }); window._psResultBound = true; }
-      $("#psInstall").addEventListener("click", psInstallSel);
-    }
-    function showManual() {
-      $("#modeManual").classList.add("primary"); $("#modeSearch").classList.remove("primary");
-      $("#psPane").innerHTML = `
-        <div class="form-inline">
-          <label><span class="label-text">npm 依赖规格</span><input id="psSpec" type="text" placeholder="例如 @scope/pkg@^1.2.0" style="width:100%"></label>
-          <label class="checkbox"><input type="checkbox" id="psBundle" checked> 同时加入 bundle 层（启用）</label>
-        </div>
-        <div style="margin-top:10px"><button class="action-btn success" id="psManualInstall">安装</button></div>`;
-      refreshIcons($("#psPane"));
-      $("#psManualInstall").addEventListener("click", async () => {
-        const spec = $("#psSpec").value.trim(); if (!spec) return toast("请输入 spec", "err");
-        initPluginLog(); setBusy(true, "安装插件…");
-        try { await api("/api/plugins/profile/add", { method: "POST", body: { profile: S.profSel, packageSpec: spec, bundle: !!$("#psBundle").checked } }); toast("已安装（重启 dsh web 后生效）", "ok"); }
-        catch (e) { toast(e.message, "err"); } finally { setBusy(false); loadPlugins(); }
-      });
-    }
-    $("#modeSearch").addEventListener("click", showSearch);
-    $("#modeManual").addEventListener("click", showManual);
-    showSearch();
+    const placeholders = {
+      npm: "例如 @scope/pkg@^1.2.0",
+      github: "例如 github:owner/repo 或 owner/repo#tag",
+      local: "例如 D:\\plugins\\my.tgz 或 D:\\plugins\\my",
+    };
+    $("#psType").addEventListener("change", () => { $("#psSpec").placeholder = placeholders[$("#psType").value] || ""; });
+    $("#psAddGo").addEventListener("click", async () => {
+      const spec = $("#psSpec").value.trim(); if (!spec) return toast("请输入指向", "err");
+      initPluginLog(); setBusy(true, "安装插件…");
+      try {
+        const data = await api("/api/plugins/profile/add", { method: "POST", body: { profile: S.profSel, packageSpec: spec, bundle: !!$("#psBundle").checked } });
+        toast(data && data.notice ? `已安装，但请注意：${data.notice}` : "已安装（重启 dsh web 后生效）", data && data.notice ? "err" : "ok");
+      }
+      catch (e) { toast(e.message, "err"); } finally { setBusy(false); loadPlugins(); }
+    });
+    $("#psSpec").focus();
   });
-}
-async function renderSearchCards(list) {
-  const res = $("#psResults"); if (!res) return;
-  const cards = list.filter((c) => !c.error);
-  const errs = list.filter((c) => c.error);
-  res.innerHTML =
-    (cards.length ? cards.map((c) => `
-      <label class="ps-card ${c.source === "npm" ? "npm" : "github"}">
-        <input type="checkbox" name="pscard" data-source="${c.source}" data-spec="${esc(c.spec)}">
-        <span class="pc-main">
-          <span class="pc-name">${esc(c.label)} <span class="src-badge ${c.source}">${c.source}</span> ${c.pnpmGate ? '<span class="pill warn">需 pnpm 白名单</span>' : ""}</span>
-          <span class="pc-extra">${esc(c.extra)}</span>
-          <span class="pc-desc">${esc(c.description || "（无描述）")}</span>
-          ${c.pnpmGate && c.pnpmGateText ? `<span class="pc-warn"><i data-lucide="alert-triangle" style="width:12px;height:12px"></i> ${esc(c.pnpmGateText)}</span>` : ""}
-        </span>
-      </label>`).join("") : `<div class="muted">该来源未搜到结果。</div>`) +
-    (errs.length ? `<div class="muted" style="margin-top:8px">部分来源搜索失败：${errs.map((x) => `${x.source}: ${esc(x.error)}`).join("；")}</div>` : "");
-  refreshIcons(res);
-  psSyncInstall();
-}
-function psSyncInstall() {
-  const wrap = $("#psInstallWrap"); if (!wrap) return;
-  const n = $$("#psResults input[data-source]:checked").length;
-  wrap.style.display = n ? "block" : "none";
-  $("#psInstall").textContent = `安装所选（${n}）`;
-}
-async function psInstallSel() {
-  const sel = $$("#psResults input[data-source]:checked");
-  if (!sel.length) return;
-  initPluginLog();
-  setBusy(true, "安装所选插件…");
-  let done = 0, fail = 0;
-  try {
-    for (const ch of sel) {
-      try { await api("/api/plugins/profile/add", { method: "POST", body: { profile: S.profSel, packageSpec: ch.dataset.spec, bundle: true } }); done++; }
-      catch (e) { fail++; toast(e.message, "err"); }
-    }
-    toast(`安装完成：成功 ${done}，失败 ${fail}（重启 dsh web 后生效）`, fail ? "err" : "ok");
-  } finally { setBusy(false); loadPlugins(); }
 }
 async function profToggle(btn) {
   initPluginLog();
@@ -995,13 +981,14 @@ function bindActions() {
     else if (act === "addremote") addRemote();
     else if (act === "refreshVersions") { checkUpdate(false); }
     else if (act === "doctorRun") runDoctor(false);
-    else if (act === "doctorFixSettings") doctorFixSettings();
-    else if (act === "doctorFixKey") doctorFixKey();
     else if (act === "consoleRun") runConsole();
     else if (act === "consoleStop") stopConsole();
     else if (act === "saveConfig") saveConfig();
     else if (act === "retrySave") saveRetry();
     else if (act === "retryRefresh") { S.retry = null; loadRetry(); }
+    else if (act === "showChangelog") showChangelog();
+    else if (act === "secSave") saveSettingsSection();
+    else if (act === "secRefresh") { S.settings = null; loadSettingsSections(); }
     else if (act === "pluginsRefresh") loadPlugins();
     else if (act === "profAdd") profAdd();
     else if (act === "profToggle") profToggle(btn);
@@ -1069,6 +1056,43 @@ function initMobileMenu() {
   $$(".nav-item").forEach((b) => b.addEventListener("click", () => toggleMenu(false)));
 }
 
+/* ---------------- settings.yaml 通用编辑器（A2） ---------------- */
+async function loadSettingsSections() {
+  try {
+    const d = await api("/api/settings/sections");
+    S.settings = d; S.settingsKey = -1;
+    renderSettingsSections();
+  } catch (e) { toast(e.message, "err"); }
+}
+function renderSettingsSections() {
+  const d = S.settings, sel = $("#secSel");
+  if (!d || !sel) return;
+  const secs = d.sections || [];
+  $("#secFile").textContent = d.file ? " · " + d.file : "";
+  if (!secs.length) { sel.innerHTML = `<option value="">（settings.yaml 无顶层段）</option>`; $("#secText").value = ""; return; }
+  const idx = (S.settingsKey >= 0 && S.settingsKey < secs.length) ? S.settingsKey : 0;
+  sel.innerHTML = secs.map((s, i) => `<option value="${i}" ${i === idx ? "selected" : ""}>${esc(s.key)}</option>`).join("");
+  S.settingsKey = idx;
+  $("#secText").value = secs[idx].text;
+}
+function onSecChange() {
+  const sel = $("#secSel"); if (!sel) return;
+  const secs = (S.settings && S.settings.sections) || [];
+  if (S.settingsKey >= 0 && S.settingsKey < secs.length) secs[S.settingsKey].text = $("#secText").value;
+  S.settingsKey = Number(sel.value);
+  $("#secText").value = secs[S.settingsKey] ? secs[S.settingsKey].text : "";
+}
+async function saveSettingsSection() {
+  const secs = (S.settings && S.settings.sections) || [];
+  const sec = secs[S.settingsKey];
+  if (!sec) return toast("请先选择要编辑的段", "err");
+  try {
+    await api("/api/settings/sections", { method: "POST", body: { key: sec.key, text: $("#secText").value } });
+    toast(`已保存段「${sec.key}」并自动备份`, "ok");
+    await loadSettingsSections();
+  } catch (e) { toast(e.message, "err"); }
+}
+
 function switchView(name) {
   history.replaceState(null, "", "#" + name);
   renderView(name);
@@ -1080,7 +1104,7 @@ function renderView(name) {
   const titles = { dashboard: "状态总览", launch: "启动 web", update: "更新升级", versions: "版本 / 回滚", backups: "数据备份", env: "环境检查", doctor: "诊断 Doctor", console: "控制台 Console", plugins: "插件 Plugins", settings: "设置" };
   $("#viewTitle").textContent = titles[name] || "";
   if (name === "env" && S.status) { renderEnv(); renderGitState(); }
-  if (name === "settings") { renderConfigForm(); if (!S.retry) loadRetry(); }
+  if (name === "settings") { renderConfigForm(); if (!S.retry) loadRetry(); if (!S.settings) loadSettingsSections(); }
   if (name === "backups" && S.status) renderBackups(S.status.backups);
   if (name === "doctor" && !S.doctorLoaded) runDoctor(true);
   if (name === "versions") loadVersions(false);
@@ -1092,6 +1116,8 @@ function renderView(name) {
 function renderUpgradeBtn() {
   const b = $("#btnUpgrade");
   if (b) b.disabled = !(S.updateInfo && S.updateInfo.hasUpdate) || S.busy;
+  const cb = $("#btnChangelog");
+  if (cb) cb.disabled = !(S.updateInfo && S.updateInfo.hasUpdate) || S.busy;
 }
 function initNav() {
   const def = "dashboard";
@@ -1131,6 +1157,8 @@ function init() {
   if (rp) rp.addEventListener("change", onRetryProviderChange);
   const rpMode = $("#rpMode");
   if (rpMode) rpMode.addEventListener("change", syncRetryNormalFields);
+  const secSel = $("#secSel");
+  if (secSel) secSel.addEventListener("change", onSecChange);
   const profSel = $("#profSel");
   if (profSel) profSel.addEventListener("change", (e) => { S.profSel = e.target.value; renderProfiles(); });
   syncConsoleButtons();

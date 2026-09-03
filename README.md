@@ -127,15 +127,9 @@ flowchart LR
   seq 连续 / sourceEventSeqs / 未知事件类型 / end-seed 重放 / 全会话扫描）。
 - **Layer A 远程检查目录（catalog）**：声明式只读探测规则（内置副本 + 每 6h 拉取远端，可动态增新检查，无需重装）。
 - **Layer B 版本提示**：对比本端口版本与 dsh-doctor 上游版本，仅提示、不自动更新。
-- **dsh_manager 自检**：凭据 `DEEPSEEK_API_KEY` 存在性与来源链（进程环境 → cwd/.env → `~/.dsh/.env` →
-  provider 凭据存储，**只判存在性、绝不回显值**）、`settings.yaml`、web.log、repository 插件安装痕迹、仓库 git 状态。
-- **诚信原则修复**：settings 缺失 / 损坏时先备份再写入最小合法配置；凭据由你手动输入后写入 `~/.dsh/.env`；
-  其余问题只输出可直接复制的精确命令，**不越权改动**你的环境。
 
 <sup>① 诊断引擎改写自社区同名项目 [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor)（MIT License）。
-其 dsh_manager 自检的诊断框架（report 结构、`fixSettings`/`fixCredentials` 修复助手等）衍生自本项目先期移植自
-[`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor)（BSD-3-Clause，版权 `dsh-external`）的实现；
-其中凭据来源链含 provider 凭据存储层属 dsh_manager **自有增强**，非 coppynight 原样逻辑。两份原版权与许可全文均保留在 `doctor.js` 末尾。</sup>
+其原版权与许可全文保留在 `doctor.js` 末尾。</sup>
 
 ## 命令控制台
 
@@ -187,8 +181,4 @@ node server.js          # 启动管理界面，浏览器打开 http://127.0.0.1:
 - 其「诊断 Doctor」的**诊断引擎**改写自
   [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor)（MIT License，版权 `moonquake2004`）。
   为符合 MIT 许可证要求，`doctor.js` 顶部标注来源、末尾保留其许可证全文。
-- 其「dsh_manager 自检」的诊断框架衍生自先期移植自
-  [`coppynight/dsh-doctor`](https://github.com/coppynight/dsh-doctor)（BSD-3-Clause，版权 `dsh-external`）的实现；
-  凭据来源链（provider 凭据存储层）为 dsh_manager **自有增强**。
-  为符合 BSD-3 第 1 条源码再分发要求，`doctor.js` 末尾一并保留**原版权声明 + 条款 + 免责声明全文**。
 - DSH是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git) 的缩写。
