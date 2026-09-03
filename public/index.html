@@ -113,9 +113,15 @@
           <div id="updateInfo" class="status-box">点击下方按钮，从官方仓库拉取并检测新版本。</div>
           <div class="btn-row">
             <button class="action-btn primary" data-act="check"><i data-lucide="refresh-cw"></i>检查更新</button>
+            <button class="action-btn" data-act="showChangelog" id="btnChangelog" disabled><i data-lucide="git-compare"></i>查看变更预览</button>
             <button class="action-btn success" data-act="upgrade" id="btnUpgrade" disabled><i data-lucide="arrow-up-circle"></i>升级到最新版</button>
           </div>
           <p class="hint">升级前会自动备份 <code>~/.dsh</code> 到 backups 目录。升级流程：git fetch → 切换最新 tag → pnpm install → pnpm build。</p>
+          <p class="hint" style="color:var(--state-warning)">升级 / 构建过程中请勿关闭本页面或退出 dsh_manager，中途退出可能导致仓库停在半构建状态，需手动重新构建才能恢复。</p>
+        </div>
+        <div class="card" id="updateChangelogCard" style="display:none">
+          <div class="card-title"><i data-lucide="git-compare" class="ct-icon"></i>变更预览<span class="muted" id="changelogRange"></span></div>
+          <div id="updateChangelog" class="status-box"></div>
         </div>
         <div class="card">
           <div class="card-title"><i data-lucide="scroll-text" class="ct-icon"></i>升级日志</div>
@@ -175,12 +181,10 @@
           <div class="card-title"><i data-lucide="stethoscope" class="ct-icon"></i>诊断 Doctor<span class="muted">（移植自 dsh-doctor，flutter-doctor 风格，已做 Windows 适配）</span></div>
           <div class="btn-row">
             <button class="action-btn primary" data-act="doctorRun"><i data-lucide="stethoscope"></i>运行全部检查</button>
-            <button class="action-btn" data-act="doctorFixSettings"><i data-lucide="file-cog"></i>修复设置 settings.yaml</button>
-            <button class="action-btn" data-act="doctorFixKey"><i data-lucide="key"></i>补写 DEEPSEEK_API_KEY</button>
             <span class="spacer"></span>
             <span id="doctorSummary" class="pill">—</span>
           </div>
-          <p class="hint">安装级检查（Node/git/pnpm/凭据/仓库/git hooks）+ harness 级检查（settings/sessions/凭据链/web 日志）。修复遵循“诚实原则”：settings 自动备份重建，凭据输入后写入，其余只给指引不越权改动。</p>
+          <p class="hint">安装级检查（Node/git/pnpm/凭据/仓库/git hooks）+ harness 级检查（settings/sessions/凭据链/web 日志）。</p>
         </div>
         <div class="card">
           <div class="card-title"><i data-lucide="clipboard-list" class="ct-icon"></i>检查结果</div>
@@ -277,6 +281,18 @@
             <span class="spacer"></span>
             <span id="rpStatus" class="pill">—</span>
           </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="file-cog" class="ct-icon"></i>settings.yaml 通用编辑器<span class="muted" id="secFile"></span></div>
+          <div class="console-row">
+            <select id="secSel"></select>
+            <button class="action-btn primary" data-act="secSave"><i data-lucide="save"></i>保存该段</button>
+            <button class="action-btn" data-act="secRefresh"><i data-lucide="refresh-cw"></i>刷新</button>
+          </div>
+          <label class="wide"><span class="label-text">该段内容（YAML，保存前自动备份 <code>.settings-editor-bak</code>）</span>
+            <textarea id="secText" rows="12" spellcheck="false"></textarea>
+          </label>
+          <p class="hint">按顶层段编辑，仅影响所选段、其余原样保留。含敏感字段（key/token/apiKey）时后台会自动备份，请谨慎修改；retryPolicy 段请走上方专门表单，两者行级互不干扰。</p>
         </div>
       </section>
 
