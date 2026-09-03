@@ -241,7 +241,7 @@ function currentGitTag(repo) {
 
 /** 收集从 fromTag 到 toTag 的本地 git 变更（提交列表 + shortstat 统计）。目标标签缺失时按需 fetch。 */
 async function changelogBetween(repo, fromTag, toTag) {
-  const have = () => runSync("git", ["rev-parse", "--verify", "--quiet", toTag + "^{commit}"], { cwd: repo }).code === 0;
+  const have = () => runSync("git", ["rev-parse", "--verify", "--quiet", `refs/tags/${toTag}`], { cwd: repo }).code === 0;
   if (!have()) {
     try { await fetchTag(toTag, () => {}); }
     catch (e) { return { ok: false, error: `目标标签 ${toTag} 未在本地且拉取失败: ${e.message}` }; }
