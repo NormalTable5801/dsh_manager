@@ -1,8 +1,8 @@
 /* =====================================================================
  * dsh_manager  server.js
  * 零依赖 Node 服务：为 DeepSeek Harness 提供 WebUI 管理界面。
- * 功能：一键启动/停止 dsh web、检测更新与升级、git 源码版本列表与回滚、
- *       ~/.dsh 数据备份 / 还原 / 覆盖、环境检测、构建、进程托管、SSE 日志。
+ * 功能：一键启动/停止 dsh web、检测更新与升级（npm 发布流）、版本安装与回滚、
+ *       ~/.dsh 数据备份 / 还原 / 覆盖、环境检测、进程托管、SSE 日志。
  * 默认仅绑定 127.0.0.1 本地监听。
  * ===================================================================== */
 "use strict";
@@ -26,31 +26,30 @@ const LOG_DIR = path.join(ROOT, "logs");
 
 const DSH_DIR_NAME = ".dsh";
 const DSHDIR_ENV = "DSH_HOME";
-const OFFICIAL_REMOTE = "https://github.com/deepseek-ai/deepseek-harness.git";
-const OFFICIAL_REMOTE_NAME = "origin";
+const INSTALL_PKG = "@deepseek-ai/dsh";
+const GITHUB_OWNER = "deepseek-ai";
+const GITHUB_REPO = "deepseek-harness";
 
 const isWin = process.platform === "win32";
 const NODE_NEED = "node ^22.19.x（或 24.x）";
+const CHANNELS = ["latest", "next", "alpha"];
 
 /* ------------------------------- 配置 ------------------------------- */
 
-// 新人依赖安装指引（默认走引导式：复制命令 / 打开官方页；点“自动安装”才用 winget/corepack 半自动）。
+// 新人依赖安装指引（默认走引导式：复制命令 / 打开官方页；点“自动安装”才用 winget 半自动）。
 // cmd 是可复制给用户的安装命令；url 是官方下载页。
 const DEP_HELP = {
   node: { cmd: "winget install --id OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements", url: "https://nodejs.org/zh-cn/download" },
-  pnpm: { cmd: "corepack enable\ncorepack prepare pnpm@latest --activate", url: "https://pnpm.io/zh/installation" },
-  git:  { cmd: "winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements", url: "https://git-scm.com/download/win" },
 };
 
 const DEFAULT_CONFIG = {
-  repoPath: "",                 // 留空自动发现
-  onboarded: false,             // 是否已完成首次引导（写入被 gitignore 的 config.json）
-  dshHome: "",                  // 留空 => %USERPROFILE%\.dsh / $DSH_HOME
+  installDir: "",                  // 受管独立 npm 安装目录；留空 => <dsh_manager>/dsh-install
+  channel: "latest",               // 检测/升级默认跟随的发布流：latest | next | alpha
+  onboarded: false,                // 是否已完成首次引导（写入被 gitignore 的 config.json）
+  dshHome: "",                     // 留空 => %USERPROFILE%\.dsh / $DSH_HOME
   port: 8730,
-  webPort: 0,                   // >0 用于探活与识别访问地址
+  webPort: 0,                      // >0 用于探活与识别访问地址
   launchProfile: "web",
-  launchMode: "built",          // built | source
-  officialRemote: OFFICIAL_REMOTE,
   autoBackupBeforeUpgrade: true,
   safetyBackupBeforeRestore: true,
   maxBackups: 10,
@@ -59,21 +58,8 @@ const DEFAULT_CONFIG = {
 
 let config = loadConfig();
 
-function defaultRepoPath() {
-  // 在 dsh_manager 的上级目录里找 package.json name === "@deepseek-ai/dsh-root" 的根仓库
-  const parent = path.dirname(ROOT);
-  let found = "";
-  try {
-    for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const pkg = path.join(parent, entry.name, "package.json");
-      if (!fs.existsSync(pkg)) continue;
-      let name = "";
-      try { name = JSON.parse(fs.readFileSync(pkg, "utf8")).name || ""; } catch { /* ignore */ }
-      if (name === "@deepseek-ai/dsh-root") { found = path.join(parent, entry.name); break; }
-    }
-  } catch { /* ignore */ }
-  return found;
+function defaultInstallDir() {
+  return path.join(ROOT, "dsh-install");
 }
 
 function loadConfig() {
@@ -81,7 +67,8 @@ function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_PATH)) Object.assign(base, JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")));
   } catch { /* ignore */ }
-  base.repoPath = base.repoPath || defaultRepoPath();
+  base.installDir = (base.installDir && base.installDir.trim()) ? path.resolve(expandTilde(base.installDir)) : defaultInstallDir();
+  if (!CHANNELS.includes(base.channel)) base.channel = "latest";
   return base;
 }
 function saveConfig() {
@@ -144,11 +131,9 @@ function cmpSemver(a, b) {
   if (A.patch !== B.patch) return A.patch > B.patch ? 1 : -1;
   return cmpPre(A.pre, B.pre);
 }
-function toVersionList(tags) {
-  return tags
-    .map((t) => ({ tag: t, v: t.replace(/^dsh-?/i, "").replace(/^v/i, "") }))
-    .filter((x) => /^\d+\.\d+/.test(x.v))
-    .sort((x, y) => cmpSemver(y.v, x.v));
+/** 归一化版本号字符串（去掉可选的前导 v）。 */
+function normVersion(v) {
+  return String(v || "").replace(/^v/i, "").trim();
 }
 
 /* ------------------------------- 命令执行 ------------------------------- */
@@ -158,11 +143,15 @@ function sanitizeArg(a) {
   if (/[\r\n&|;`<>$]/.test(a)) return "";
   return a;
 }
-/** 运行命令并逐行回调，返回退出码（Promise）。Windows 用 shell:true 以支持 pnpm.cmd 等 shim。 */
+/** 运行命令并逐行回调，返回退出码（Promise）。Windows 用 shell:true 以支持 npm.cmd 等 shim。 */
 function run({ cmd, args, cwd, env, onLine, label }) {
   return new Promise((resolve) => {
     const safeArgs = args.map(sanitizeArg);
-    const child = spawn(cmd, safeArgs, {
+    // shell:true 下 Windows 会把 cmd 与 args 裸拼接后交给 cmd.exe 解析，
+    // 若 cmd 本身是含空格的可执行文件路径（如 C:\Program Files\nodejs\node.exe）
+    // 不加引号会被截断成「C:\Program…」导致启动失败，这里统一补上引号。
+    const quotedCmd = /\s/.test(cmd) ? `"${cmd}"` : cmd;
+    const child = spawn(quotedCmd, safeArgs, {
       cwd, env: { ...process.env, ...env }, shell: true, windowsHide: true,
     });
     const emit = (buf) => String(buf).split(/\r?\n/).forEach((line) => {
@@ -180,7 +169,7 @@ function runSync(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { encoding: "utf8", ...opts, shell: true, windowsHide: true });
   return { code: r.status ?? (r.error ? 1 : -1), out: (r.stdout || "") + (r.stderr || ""), error: r.error };
 }
-/** 收集输出的命令运行（用于 git ls-remote 等）。 */
+/** 收集输出的命令运行（用于 npm view 等）。 */
 function runCollect(cmd, args, opts = {}) {
   return new Promise((resolve) => {
     const lines = [];
@@ -194,71 +183,35 @@ function runCollect(cmd, args, opts = {}) {
     child.on("close", (code) => resolve({ code: code ?? 1, lines, out: lines.join("\n") }));
   });
 }
-/** 判断 git 输出是否为网络类瞬时错误（可重试），本地状态类错误不计入。 */
-function isGitNetworkError(out) {
-  return /Could not resolve host|unable to access|Failed to connect|Connection (refused|reset|closed by peer|timed out)|OpenSSL|SSL_?/i.test(String(out || ""))
-    || /Timed out|network is unreachable|Recv failure|Bad Gateway|504|502|rate limit/i.test(String(out || ""));
-}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-/**
- * 对只读/拉取类 git 命令做自动重试：仅当命令失败且为网络类错误时，
- * 以轻微指数退避重试（默认共 3 次尝试）。本地/状态类失败原样返回，
- * 由调用方按原有语义抛错，避免掩盖真实问题。
- */
-async function runGitWithRetry(fn, { tl, label, retries = 2, baseDelayMs = 1000 } = {}) {
-  for (let i = 0; i <= retries; i++) {
-    const r = await fn();
-    if (r.code === 0) return r;
-    if (!isGitNetworkError(r.out || "") || i === retries) return r;
-    const delay = baseDelayMs * 2 ** i;
-    tl && tl(`${label} 网络异常(exit=${r.code})，${delay}ms 后重试 …`);
-    await sleep(delay);
-  }
-  return { code: -1, out: "" };
-}
-function coreRef(repo) {
-  const t = runSync("git", ["describe", "--tags", "--exact-match", "HEAD"], { cwd: repo });
-  if (t.code === 0) return t.out.trim();
-  const c = runSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repo });
-  const b = runSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo });
-  return `${(b.out || "detached").trim()}@${(c.out || "?").trim()}`;
-}
-function packageVersion(repo) {
-  try { return JSON.parse(fs.readFileSync(path.join(repo, "package.json"), "utf8")).version || ""; }
-  catch { return ""; }
-}
-function hasRemote(repo) {
-  const r = runSync("git", ["remote"], { cwd: repo });
-  return (r.out || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean).includes(OFFICIAL_REMOTE_NAME);
+
+/** 将 GitHub Release 正文转成干净的纯文本简介：去 HTML、去 markdown 链接壳、折叠空行、去掉 “Full Changelog” 尾注。 */
+function cleanReleaseBody(body) {
+  if (!body || !body.trim()) return "";
+  return String(body)
+    .replace(/<[^>]+>/g, "")                                   // 去 HTML 标签
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")                    // markdown 链接保留文本
+    .replace(/\r\n|\r/g, "\n")
+    .split("\n").map((s) => s.trim())
+    .filter((s) => s
+      && !/^full change\s*/i.test(s)
+      && !/^\s*-----/.test(s)
+      && !/^(中文|english)(\s*)(\||&|·|,)(\s*)(中文|english)$/i.test(s))
+    .join("\n")
+    .replace(/\n{2,}/g, "\n");
 }
 
-/** 取最近可达的 tag 作为“当前版本”基线（HEAD 不在任何 tag 可达点则 null）。 */
-function currentGitTag(repo) {
-  const r = runSync("git", ["describe", "--tags", "--abbrev=0"], { cwd: repo });
-  if (r.code === 0) { const t = (r.out || "").trim(); return t || null; }
-  return null;
-}
-
-/** 收集从 fromTag 到 toTag 的本地 git 变更（提交列表 + shortstat 统计）。目标标签缺失时按需 fetch。 */
-async function changelogBetween(repo, fromTag, toTag) {
-  const have = () => runSync("git", ["rev-parse", "--verify", "--quiet", `refs/tags/${toTag}`], { cwd: repo }).code === 0;
-  if (!have()) {
-    try { await fetchTag(toTag, () => {}); }
-    catch (e) { return { ok: false, error: `目标标签 ${toTag} 未在本地且拉取失败: ${e.message}` }; }
-  }
-  if (!have()) return { ok: false, error: `本地仍没有 ${toTag} 的提交对象` };
-  const logR = runSync("git", ["log", `${fromTag}..${toTag}`, "--oneline"], { cwd: repo });
-  if (logR.code !== 0) return { ok: false, error: `git log 失败: ${logR.out.slice(0, 200)}` };
-  const commits = (logR.out || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
-    const i = l.indexOf(" ");
-    return i > 0 ? { hash: l.slice(0, i), subject: l.slice(i + 1) } : { hash: l, subject: "" };
-  });
-  const statR = runSync("git", ["log", `${fromTag}..${toTag}`, "--shortstat"], { cwd: repo });
-  const stat = { files: 0, insertions: 0, deletions: 0 };
-  const statLines = (statR.out || "").split(/\r?\n/).filter(Boolean);
-  const m = (statLines[statLines.length - 1] || "").match(/(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/);
-  if (m) { stat.files = +m[1]; stat.insertions = +(m[2] || 0); stat.deletions = +(m[3] || 0); }
-  return { ok: true, from: fromTag, to: toTag, commits, stat };
+/** 获取某版本（npm 版本号，映射到 GitHub Release tag `dsh-v<version>`）的官方发布简介。网络失败或缺失返回 null。 */
+async function releaseNoteForVersion(version) {
+  const tag = `dsh-v${normVersion(version)}`;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tags/${encodeURIComponent(tag)}`, {
+      headers: { "Accept": "application/vnd.github+json", "User-Agent": "dsh_manager" },
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return cleanReleaseBody(j && j.body);
+  } catch { return null; }
 }
 
 /* ------------------------------- 任务 / SSE ------------------------------- */
@@ -435,7 +388,7 @@ async function createBackup({ kind = "backup", version = "", overwrite = false }
   const now = new Date();
   const id = backupId(
     now.toISOString().slice(0, 10).replace(/-/g, "") + "-" + now.toISOString().slice(11, 19).replace(/:/g, ""),
-    version || packageVersion(config.repoPath),
+    version || installedVersion(),
   );
   const dest = path.join(BACKUP_DIR, id);
   if (fs.existsSync(dest)) {
@@ -446,7 +399,7 @@ async function createBackup({ kind = "backup", version = "", overwrite = false }
   await copyDir(src, dest, tl);
   const fin = dirStats(dest);
   fs.writeFileSync(path.join(dest, "_manifest.json"), JSON.stringify({
-    kind, version: version || packageVersion(config.repoPath), created: new Date().toISOString(),
+    kind, version: version || installedVersion(), created: new Date().toISOString(),
     source: src, files: fin.files, size: fin.size,
   }, null, 2), "utf8");
   const all = listBackups();
@@ -472,91 +425,99 @@ async function restoreBackup(id, { safety }, tl) {
   tl("还原完成");
 }
 
-/* ------------------------------- git / 构建 / 升级 ------------------------------- */
+/* ------------------------------- npm 安装 / 检测 / 升级 ------------------------------- */
 
-async function ensureRemote(tl) {
-  if (hasRemote(config.repoPath)) return;
-  tl(`添加官方 remote：${config.officialRemote}`);
-  const code = await run({ cmd: "git", args: ["remote", "add", OFFICIAL_REMOTE_NAME, config.officialRemote], cwd: config.repoPath, label: "git", onLine: tl });
-  if (code !== 0) throw new Error("添加 remote 失败");
+function installPkgDir() {
+  const seg = INSTALL_PKG.split("/");
+  return path.join(config.installDir, "node_modules", ...seg);
 }
-/**
- * 只读地列出官方远程的所有 tag（git ls-remote，无需下载仓库对象，秒级）。
- * 用于“检测更新 / 版本列表”。
- */
-async function remoteTags() {
-  await ensureRemote(() => {});
-  const r = await runGitWithRetry(() => runCollect("git", ["ls-remote", "--tags", OFFICIAL_REMOTE_NAME], { cwd: config.repoPath }), { tl: null, label: "git ls-remote" });
-  if (r.code !== 0) throw new Error(`ls-remote 失败 (${r.code}): ${r.out.slice(0, 300)}`);
-  const seen = new Set();
-  for (const line of r.lines) {
-    const sp = line.split(/\s+/);
-    if (sp.length < 2 || !sp[1].startsWith("refs/tags/")) continue;
-    let t = sp[1].slice("refs/tags/".length);
-    if (t.endsWith("^{}")) t = t.slice(0, -3); // 注解 tag 的二次引用
-    if (t) seen.add(t);
-  }
-  return toVersionList([...seen]);
+/** 当前受管安装的 dsh 版本（未安装返回空串）。 */
+function installedVersion() {
+  try { return JSON.parse(fs.readFileSync(path.join(installPkgDir(), "package.json"), "utf8")).version || ""; }
+  catch { return ""; }
 }
-function localTags() {
-  const r = runSync("git", ["tag", "-l"], { cwd: config.repoPath });
-  return (r.out || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+function hasInstall() {
+  return fs.existsSync(path.join(installPkgDir(), "package.json"));
 }
-/** 按需拉取单个 tag 的仓库对象（比全量 fetch 轻量得多）。 */
-async function fetchTag(tag, tl) {
-  await ensureRemote(tl);
-  tl(`拉取版本 ${tag} ...`);
-  const r = await runGitWithRetry(
-    () => runCollect("git", ["fetch", OFFICIAL_REMOTE_NAME, `+refs/tags/${tag}:refs/tags/${tag}`, "--force"], { cwd: config.repoPath }),
-    { tl, label: "git fetch" }
-  );
-  if (r.code !== 0) throw new Error(`拉取 ${tag} 失败 (exit=${r.code})，请检查网络`);
+
+/** 只读查询 npm 注册表（如 dist-tags / versions），返回解析后的值。 */
+async function npmView(args) {
+  const r = await runCollect("npm", ["view", INSTALL_PKG, ...args, "--json"], {});
+  if (r.code === 127) throw new Error("未检测到 npm（请先安装 Node.js）");
+  if (r.code !== 0) throw new Error(`npm view 失败 (${r.code}): ${r.out.slice(0, 300)}`);
+  return r.out.trim();
 }
-async function checkoutTag(t, tag, tl) {
-  const clean = runSync("git", ["status", "--porcelain"], { cwd: config.repoPath });
-  const trackedDirty = (clean.out || "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !/^\?\?/.test(l));
-  if (trackedDirty.length) {
-    throw new Error(`仓库有 ${trackedDirty.length} 处已跟踪改动，为避免丢失，请先在仓库提交或撤销后再切换：\n${trackedDirty.slice(0, 8).join("\n")}`);
-  }
-  tl(`切换到版本 ${tag} ...`);
-  const code = await run({ cmd: "git", args: ["checkout", "--force", tag], cwd: config.repoPath, label: "git", onLine: tl });
-  if (code !== 0) throw new Error(`切换到 ${tag} 失败 (exit=${code})`);
+/** npm dist-tags 映射：{ latest, next, alpha, … }。 */
+async function channelMap() {
+  try { const j = JSON.parse(await npmView(["dist-tags"])); return (j && typeof j === "object") ? j : {}; }
+  catch { return {}; }
 }
-async function build(tagRef, tl) {
-  tl("pnpm install ...");
-  let code = await run({ cmd: "pnpm", args: ["install"], cwd: config.repoPath, label: "pnpm", onLine: tl });
-  if (code !== 0) throw new Error(`pnpm install 失败 (exit=${code})`);
-  // 版本切换后 git checkout 不会清除被忽略的旧 lib 构建产物，残留产物会污染启动与增量构建，
-  // 因此每次构建前先 pnpm clean（只删生成物，保留 node_modules，store 复用不重复下载）。
-  tl("pnpm clean（清理旧构建产物）...");
-  code = await run({ cmd: "pnpm", args: ["clean"], cwd: config.repoPath, label: "pnpm", onLine: tl });
-  if (code !== 0) throw new Error(`pnpm clean 失败 (exit=${code})`);
-  tl("pnpm build ...");
-  code = await run({ cmd: "pnpm", args: ["run", "build"], cwd: config.repoPath, label: "pnpm", onLine: tl });
-  if (code !== 0) throw new Error(`pnpm build 失败 (exit=${code})`);
-  tl("构建完成");
+/** 所有已发布版本（按 semver 倒序）。 */
+async function publishedVersions() {
+  let arr = [];
+  try { const j = JSON.parse(await npmView(["versions"])); if (Array.isArray(j)) arr = j; } catch { arr = []; }
+  return arr.map(normVersion)
+    .filter((v) => v && /^\d+\.\d+\.\d+/.test(v))
+    .map((v) => ({ v }))
+    .sort((a, b) => cmpSemver(b.v, a.v));
 }
-async function switchVersion(t, tag, { backup }, tl) {
-  tl(`== 目标版本：${tag} ==`);
+/** 当前配置渠道对应的目标版本（如 latest 流指向 0.1.2-rc.1）。 */
+async function targetVersionForChannel() {
+  const m = await channelMap();
+  return normVersion(m[config.channel] || m.latest || "") || null;
+}
+
+/** 安装 dsh 到受管目录：version 为空则按 config.channel 装渠道最新。 */
+async function npmInstall(version, tl) {
+  const target = version ? normVersion(version) : ((await targetVersionForChannel()) || config.channel);
+  fs.mkdirSync(config.installDir, { recursive: true });
+  const spec = `${INSTALL_PKG}@${target}`;
+  tl(`npm install --prefix ${config.installDir} ${spec} ...`);
+  const code = await run({
+    cmd: "npm",
+    args: ["--prefix", config.installDir, "install", spec, "--no-fund", "--no-audit", "--no-save", "--loglevel=error"],
+    cwd: config.installDir, label: "npm", onLine: tl,
+  });
+  if (code !== 0) throw new Error(`npm install 失败 (exit=${code})，请查看上方日志恢复`);
+  tl("安装完成");
+}
+/** 确保已安装 dsh（未安装则装 channel 最新）。 */
+async function ensureInstalled(tl) {
+  if (hasInstall()) return;
+  tl(`未安装 Harness，安装 ${INSTALL_PKG}（渠道 ${config.channel}）...`);
+  await npmInstall(null, tl);
+}
+/** 升级/回滚公共入口：version 为空则升到 channel 最新。 */
+async function switchVersion(t, version, { backup }, tl) {
+  const target = version ? normVersion(version) : ((await targetVersionForChannel()) || config.channel);
+  tl(`== 目标版本：${target} ==`);
   if (backup && config.autoBackupBeforeUpgrade) {
     tl("升级/回滚前自动备份数据 ...");
-    await createBackup({ kind: "pre-upgrade", version: tag, overwrite: false }, tl);
+    await createBackup({ kind: "pre-upgrade", version: target, overwrite: false }, tl);
   } else {
     tl("跳过升级前备份（未开启）");
   }
-  await fetchTag(tag, tl);
-  await checkoutTag(t, tag, tl);
-  await build(t, tl);
+  await npmInstall(target, tl);
 }
 
 /* ------------------------------- dsh web 进程托管 ------------------------------- */
 
 const WEB = { proc: null, pid: null, startedAt: null, recentLog: [], url: null };
+/** 受管安装的 dsh CLI 主入口绝对路径（bin 声明；解析失败返回空串）。 */
+function dshBinFile() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(installPkgDir(), "package.json"), "utf8"));
+    const b = pkg && pkg.bin;
+    let rel = "";
+    if (typeof b === "string") rel = b;
+    else if (b && typeof b === "object") rel = b.dsh || b[Object.keys(b)[0]] || "";
+    if (rel) return path.resolve(installPkgDir(), String(rel).replace(/^\.\//, ""));
+  } catch { /* 未安装 */ }
+  return "";
+}
 function webBinPath() {
-  if (config.launchMode === "source") {
-    return { cmd: process.execPath, args: ["--import", "tsx/esm", path.join(config.repoPath, "apps/cli/src/bin.ts")] };
-  }
-  return { cmd: process.execPath, args: [path.join(config.repoPath, "apps/cli/lib/bin.js")] };
+  const f = dshBinFile();
+  return { cmd: f ? process.execPath : "", args: f ? [f] : [] };
 }
 function isWebRunning() { return !!(WEB.proc && WEB.proc.exitCode === null); }
 function probeWebPort(port) {
@@ -582,7 +543,7 @@ function webState() {
     running,
     pid: running ? WEB.pid : null,
     startedAt: running ? WEB.startedAt : null,
-    mode: config.launchMode, profile: config.launchProfile,
+    mode: "npm", profile: config.launchProfile,
     configuredPort: config.webPort,
     externalOccupied: external,
     url: running ? WEB.url : null,
@@ -601,14 +562,14 @@ function openBrowser(url) {
 async function launchWeb() {
   if (isWebRunning()) throw new Error("dsh web 已在运行");
   const bin = webBinPath();
-  if (config.launchMode === "built" && !fs.existsSync(path.join(config.repoPath, "apps/cli/lib/bin.js"))) {
-    throw new Error("缺少构建产物 apps/cli/lib/bin.js，请先“构建”，或在设置里把启动方式切换为 source");
+  if (!bin.cmd || !fs.existsSync(bin.args[0])) {
+    throw new Error(`尚未安装 Harness（受管目录 ${config.installDir}），请先在“环境/检测更新”处安装后再启动`);
   }
   const args = [...bin.args, "--profile", config.launchProfile];
   if (config.webPort > 0) args.push("--port", String(config.webPort));
   const env = { ...process.env, [DSHDIR_ENV]: resolveDshHome() };
   WEB.recentLog = []; WEB.url = null;
-  const child = spawn(bin.cmd, args, { cwd: config.repoPath, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const child = spawn(bin.cmd, args, { cwd: config.installDir, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   WEB.proc = child; WEB.pid = child.pid; WEB.startedAt = Date.now();
   const emit = (buf) => String(buf).split(/\r?\n/).forEach((line) => {
     const text = stripAnsi(line);
@@ -646,26 +607,20 @@ function jsonBody(req) {
 }
 
 function envInfo() {
-  const info = { node: "", pnpm: "", git: "", warnings: [], nodeOk: null, nodeMessage: "" };
+  const info = { node: "", npm: "", warnings: [], nodeOk: null, nodeMessage: "" };
   const nodeR = runSync("node", ["-v"]);
   info.node = (nodeR.out || "").trim();
-  const pnpmR = runSync("pnpm", ["-v"]);
-  const pm = (pnpmR.out || "").split(/\r?\n/).map((s) => s.trim()).map((s) => s.match(/^v?\d+\.\d+\.\d+/)).filter(Boolean).map((m) => m[0]);
-  info.pnpm = pm[0] || null;
-  const gitR = runSync("git", ["--version"]);
-  info.git = (gitR.out || "").trim();
+  const npmR = runSync("npm", ["-v"]);
+  info.npm = (npmR.out || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || null;
   if (!info.node) { info.warnings.push("未检测到 node"); info.nodeOk = false; }
   else {
     const parts = info.node.replace(/^v/i, "").split(".").map(Number);
     const good = (parts[0] === 22 && parts[1] >= 19) || (parts[0] >= 24 && parts[0] < 25);
     info.nodeOk = good;
-    info.nodeMessage = good ? `node ${parts[0]}.${parts[1]}.${parts[2]} 满足要求` : `node ${parts[0]}.${parts[1]}.${parts[2]} 不满足要求（${NODE_NEED}），构建可能失败`;
+    info.nodeMessage = good ? `node ${parts[0]}.${parts[1]}.${parts[2]} 满足要求` : `node ${parts[0]}.${parts[1]}.${parts[2]} 不满足要求（${NODE_NEED}），安装可能失败`;
     if (!good) info.warnings.push(info.nodeMessage);
   }
-  if (!info.pnpm) info.warnings.push("未检测到 pnpm");
   info.nodeHelp = DEP_HELP.node;
-  info.pnpmHelp = DEP_HELP.pnpm;
-  info.gitHelp = DEP_HELP.git;
   return info;
 }
 
@@ -673,17 +628,13 @@ function envMissing() {
   const e = envInfo();
   const missing = [];
   if (!e.node || !e.nodeOk) missing.push("node");
-  if (!e.pnpm) missing.push("pnpm");
-  if (!e.git) missing.push("git");
   return missing;
 }
 
-/* ------------------------------- 新人依赖安装 / 仓库获取 ------------------------------- */
+/* ------------------------------- 新人依赖 / Harness 安装 ------------------------------- */
 
 const DEP_INSTALL_CMDS = {
   node: [["winget", "install", "--id", "OpenJS.NodeJS.LTS", "--silent", "--accept-package-agreements", "--accept-source-agreements"]],
-  pnpm: [["corepack", "enable"], ["corepack", "prepare", "pnpm@latest", "--activate"]],
-  git: [["winget", "install", "--id", "Git.Git", "--silent", "--accept-package-agreements", "--accept-source-agreements"]],
 };
 
 function whichExe(name) {
@@ -692,12 +643,12 @@ function whichExe(name) {
 }
 
 async function autoInstallTools(atools) {
-  const tools = (atools && atools.length ? atools : envMissing()).filter((t) => DEP_INSTALL_CMDS[t] && !(t === "node" ? (envInfo().node && envInfo().nodeOk) : envInfo()[t]));
+  const tools = (atools && atools.length ? atools : envMissing()).filter((t) => DEP_INSTALL_CMDS[t] && !((envInfo().node && envInfo().nodeOk)));
   if (!tools.length) return { installed: [], skipped: tools };
   const t = await startTask("自动安装依赖：" + tools.join(", "));
   try {
     for (const tool of tools) {
-      if ((tool === "node" || tool === "git") && !whichExe("winget")) {
+      if (tool === "node" && !whichExe("winget")) {
         listenTask(t, `[warn] 系统未检测到 winget，无法自动安装 ${tool}；请改用“打开官方下载页”手动安装。`);
         continue;
       }
@@ -711,43 +662,23 @@ async function autoInstallTools(atools) {
   } catch (e) { finishTask(t, false, e); throw e; }
 }
 
-async function ensureHarnessRepo() {
-  const has = config.repoPath && fs.existsSync(path.join(config.repoPath, "package.json"));
-  if (has) return { already: true, repoPath: config.repoPath };
-  const target = path.join(path.dirname(ROOT), "deepseek-harness");
-  const t = await startTask("获取 Harness 源码（git clone）");
+/** 首次/手动安装入口：把 Harness 官方 npm 包装进受管目录。 */
+async function installHarness(tl) {
+  const t = await startTask("安装 DeepSeek Harness（npm）");
   try {
-    const code = await run({ cmd: "git", args: ["clone", "--depth", "1", OFFICIAL_REMOTE, target], label: "git", onLine: (l) => listenTask(t, l) });
-    if (code !== 0) throw new Error(`git clone 失败 (exit=${code})`);
-    config.repoPath = target;
-    saveConfig();
+    await ensureInstalled((l) => listenTask(t, l));
     finishTask(t, true);
-    return { already: false, repoPath: target };
+    return { ok: true, installedVersion: installedVersion(), installDir: config.installDir };
   } catch (e) { finishTask(t, false, e); throw e; }
 }
 
 function statusPayload() {
-  const repo = config.repoPath;
-  const repoExists = fs.existsSync(path.join(repo, "package.json"));
   const home = resolveDshHome();
-  let version = "", ref = null, dirty = { count: 0, msg: "" };
-  let remoteConfigured = false;
-  if (repoExists) {
-    version = packageVersion(repo);
-    try { ref = coreRef(repo); } catch {}
-    const d = runSync("git", ["status", "--porcelain"], { cwd: repo });
-    const lines = (d.out || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    dirty.count = lines.length;
-    if (lines.length) {
-      const tracked = lines.filter((l) => !/^\?\?/.test(l));
-      dirty.msg = tracked.length ? `${tracked.length} 处已跟踪改动` : `仅 ${lines.length} 个未跟踪文件`;
-    }
-    remoteConfigured = hasRemote(repo);
-  }
   return {
     ok: true,
-    repoPath: repo, repoExists, home, homeSize: cachedHomeSize(),
-    version, gitRef: ref, dirty, remoteConfigured,
+    installDir: config.installDir, installed: hasInstall(),
+    version: installedVersion(), channel: config.channel,
+    home, homeSize: cachedHomeSize(),
     onboarded: !!config.onboarded, envMissing: envMissing(),
     web: webState(), env: envInfo(), backups: listBackups(),
     task: summary(activeTask), taskHistory,
@@ -769,8 +700,8 @@ function consoleLine(text) {
   consoleEmit("console:line", { id: CONSOLE.id, line });
 }
 function dshBinArgs() {
-  if (config.launchMode === "source") return [process.execPath, "--import", "tsx/esm", path.join(config.repoPath, "apps/cli/src/bin.ts")];
-  return [process.execPath, path.join(config.repoPath, "apps/cli/lib/bin.js")];
+  const f = dshBinFile();
+  return f ? [process.execPath, f] : [process.execPath, ""];
 }
 // 仅接受 “dsh <参数>” 形式；以 argv 传参，不经 shell，规避命令注入。
 function tokenizeDsh(input) {
@@ -792,7 +723,7 @@ function runConsoleCommand(input) {
   if (!args) throw new Error("只支持以 dsh 开头的命令，例如：dsh doctor");
   const base = dshBinArgs();
   const child = spawn(base[0], [...base.slice(1), ...args], {
-    cwd: config.repoPath, env: { ...process.env, DSH_HOME: resolveDshHome() }, windowsHide: false,
+    cwd: config.installDir, env: { ...process.env, DSH_HOME: resolveDshHome() }, windowsHide: false,
   });
   CONSOLE.proc = child;
   CONSOLE.cmd = "dsh " + args.join(" ");
@@ -823,15 +754,14 @@ function stopConsoleProcess() {
 
 /* ------------------------------- 插件 Plugin ------------------------------- */
 
-/** 内置 CLI 是否就绪（built 产物或 source 入口能否解析到）。 */
+/** 内置 CLI 是否就绪（受管安装的 bin 能否解析到）。 */
 function pluginCliAvailable() {
-  if (config.launchMode === "source") return fs.existsSync(path.join(config.repoPath, "apps/cli/src/bin.ts"));
-  return fs.existsSync(path.join(config.repoPath, "apps/cli/lib/bin.js"));
+  return !!dshBinFile();
 }
-/** 转发一条 `dsh plugin ...` 命令（自动跑 pnpm 并 reconcile bundle 层）。 */
+/** 转发一条 `dsh plugin ...` 命令（走受管安装的 CLI）。 */
 async function runPluginCli(args, tl) {
   const base = dshBinArgs();
-  return run({ cmd: base[0], args: [...base.slice(1), ...args], cwd: config.repoPath, env: { ...process.env, [DSHDIR_ENV]: resolveDshHome() }, onLine: tl, label: "dsh" });
+  return run({ cmd: base[0], args: [...base.slice(1), ...args], cwd: config.installDir, env: { ...process.env, [DSHDIR_ENV]: resolveDshHome() }, onLine: tl, label: "dsh" });
 }
 /** GET /api/plugins 汇总载荷（当前 dsh 官方机制仅 Profile 组合包）。 */
 function pluginsSummary() {
@@ -850,16 +780,21 @@ async function handleApi(req, res, url) {
   if (method === "GET" && p === "/api/env") return sendJson(res, 200, { ok: true, env: envInfo() });
   if (method === "GET" && p === "/api/deps/help") {
     const e = envInfo();
-    return sendJson(res, 200, { ok: true, missing: envMissing(), help: { node: e.nodeHelp, pnpm: e.pnpmHelp, git: e.gitHelp } });
+    return sendJson(res, 200, { ok: true, missing: envMissing(), help: { node: e.nodeHelp } });
   }
   if (method === "POST" && p === "/api/deps/install") {
     const b = await jsonBody(req);
     try { return sendJson(res, 200, { ok: true, ...(await autoInstallTools(b && b.tools)) }); }
     catch (e) { return sendError(res, 500, e.message); }
   }
-  if (method === "POST" && p === "/api/deps/clone") {
-    try { return sendJson(res, 200, { ok: true, ...(await ensureHarnessRepo()) }); }
-    catch (e) { return sendError(res, 500, e.message); }
+  if (method === "POST" && p === "/api/install") {
+    if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
+    const t = await startTask("安装 DeepSeek Harness（npm）");
+    try {
+      await ensureInstalled((l) => listenTask(t, l));
+      finishTask(t, true);
+      return sendJson(res, 200, { ok: true, installed: hasInstall(), version: installedVersion(), installDir: config.installDir });
+    } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
   }
   if (method === "POST" && p === "/api/onboard/ack") {
     config.onboarded = true; saveConfig();
@@ -872,7 +807,7 @@ async function handleApi(req, res, url) {
     try {
       const onlyRaw = url.searchParams.get("only");
       const only = onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : null;
-      const ctx = doctor.buildContext({ dshHome: resolveDshHome(), repoPath: config.repoPath, processVersion: process.version });
+      const ctx = doctor.buildContext({ dshHome: resolveDshHome(), installDir: config.installDir, processVersion: process.version });
       const report = await doctor.buildReport(ctx, only);
       return sendJson(res, 200, { ok: true, checkList: doctor.CHECKS.map((c) => ({ id: c.id, title: c.title, level: c.level })), ...report });
     } catch (e) { return sendError(res, 500, e.message); }
@@ -931,15 +866,18 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { ok: true, ...r, ...plugins.listProfilePlugins(resolveDshHome(), profile) });
     } catch (e) { return sendError(res, 400, e.message); }
   }
-  // profile：涉及 pnpm / CLI 的操作 → activeTask（防并发），结束返回最新列表
+  // profile：涉及 CLI 安装操作 → activeTask（防并发），结束返回最新列表
   if (method === "POST" && p === "/api/plugins/profile/add") {
     const b = await jsonBody(req);
     const profile = String((b && b.profile) || ""), spec = String((b && b.packageSpec) || "").trim();
     if (!profile || !spec) return sendError(res, 400, "缺少 profile / packageSpec");
     // 导入本地包/目录：spec 可指向 .tgz 包文件或已解压的插件目录，安装前先校验路径存在，避免走进 pnpm 才报错
     if (/^(?:file|link):/i.test(spec) || path.isAbsolute(spec) || /^\.{1,2}[\\/]/.test(spec) || /\.tgz(?:#|$)/i.test(spec)) {
-      const localPath = path.resolve(spec.replace(/^[a-z]+:/i, ""));
-      if (!fs.existsSync(localPath)) return sendError(res, 400, `本地包/目录不存在：${spec}`);
+      // 只剥离 file:/link: 协议前缀；不要像旧的正则 /^[a-z]+:/ 那样误删 Windows 盘符（E: 等），
+      // 否则裸绝对路径会被解析到错误盘符的目录上。
+      const raw = spec.replace(/^(?:file|link):/i, "");
+      const localPath = path.isAbsolute(raw) ? raw : path.resolve(raw);
+      if (!fs.existsSync(localPath)) return sendError(res, 400, `本地包/目录不存在：${spec}（解析路径：${localPath}）`);
     }
     if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
     // 记录安装前依赖，用于安装后探测「装了但没被当插件启用」的包
@@ -951,7 +889,7 @@ async function handleApi(req, res, url) {
         const code = await runPluginCli(["plugin", "--profile", profile, "add", spec], (l) => listenTask(t, l));
         if (code !== 0) throw new Error(`dsh plugin add 失败 (exit=${code})，请查看上方日志恢复`);
       } else {
-        listenTask(t, "[退化] 缺少 CLI 构建产物，改为直接编辑 package.json（需重启后手动 pnpm install）");
+        listenTask(t, "[退化] 未检测到 Harness CLI，改为直接编辑 profile 的 package.json（需在该 profile 目录手动 pnpm install）");
         plugins.addProfilePluginDirect(resolveDshHome(), { profile, packageSpec: spec, bundle: b.bundle !== false });
       }
       // 用户明确取消 bundle 时，确保不进入 bundle 层（针对自带 dsh.bundle 声明的包）
@@ -984,7 +922,7 @@ async function handleApi(req, res, url) {
         const code = await runPluginCli(["plugin", "--profile", profile, "remove", pkg], (l) => listenTask(t, l));
         if (code !== 0) throw new Error(`dsh plugin remove 失败 (exit=${code})，请查看上方日志恢复`);
       } else {
-        listenTask(t, "[退化] 缺少 CLI 构建产物，改为直接编辑 package.json（需重启后手动 pnpm install）");
+        listenTask(t, "[退化] 未检测到 Harness CLI，改为直接编辑 profile 的 package.json（需在该 profile 目录手动 pnpm install）");
         plugins.removeProfilePluginDirect(resolveDshHome(), { profile, pkg });
       }
       finishTask(t, true);
@@ -994,13 +932,12 @@ async function handleApi(req, res, url) {
 
   if (method === "POST" && p === "/api/config") {
     const b = await jsonBody(req);
-    if (typeof b.repoPath === "string" && b.repoPath.trim()) config.repoPath = b.repoPath.trim();
+    if (typeof b.installDir === "string" && b.installDir.trim()) config.installDir = path.resolve(expandTilde(b.installDir.trim()));
+    if (typeof b.channel === "string" && CHANNELS.includes(b.channel)) config.channel = b.channel;
     if (typeof b.dshHome === "string") config.dshHome = b.dshHome.trim();
     if (Number.isFinite(b.port)) config.port = Math.max(1024, Math.min(65535, Math.round(b.port)));
     if (Number.isFinite(b.webPort)) config.webPort = Math.max(0, Math.min(65535, Math.round(b.webPort)));
-    if (["built", "source"].includes(b.launchMode)) config.launchMode = b.launchMode;
     if (typeof b.launchProfile === "string" && NAME_RE.test(b.launchProfile)) config.launchProfile = b.launchProfile;
-    if (typeof b.officialRemote === "string" && /^https:\/\//.test(b.officialRemote)) config.officialRemote = b.officialRemote.trim();
     if (typeof b.autoBackupBeforeUpgrade === "boolean") config.autoBackupBeforeUpgrade = b.autoBackupBeforeUpgrade;
     if (typeof b.safetyBackupBeforeRestore === "boolean") config.safetyBackupBeforeRestore = b.safetyBackupBeforeRestore;
     if (Number.isFinite(b.maxBackups)) config.maxBackups = Math.max(0, Math.min(50, Math.round(b.maxBackups)));
@@ -1011,17 +948,8 @@ async function handleApi(req, res, url) {
 
   if (method === "GET" && p === "/api/versions") {
     try {
-      const d = runSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: config.repoPath });
-      let remote = [];
-      let remoteOk = true;
-      try { remote = await remoteTags(); } catch { remoteOk = false; }
-      const local = toVersionList(localTags());
-      return sendJson(res, 200, {
-        ok: true,
-        versions: remote.length ? remote : local, remoteOk,
-        current: packageVersion(config.repoPath),
-        gitRef: coreRef(config.repoPath), branch: (d.out || "").trim(),
-      });
+      const [versions, channels] = await Promise.all([publishedVersions(), channelMap()]);
+      return sendJson(res, 200, { ok: true, versions, channels, channel: config.channel, current: installedVersion() });
     } catch (e) { return sendError(res, 500, e.message); }
   }
 
@@ -1029,43 +957,25 @@ async function handleApi(req, res, url) {
     if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
     const t = await startTask("检查更新");
     try {
-      const tags = await remoteTags(); // 秒级，仅读引用
+      const [versions, channels] = await Promise.all([publishedVersions(), channelMap()]);
       finishTask(t, true);
-      const current = packageVersion(config.repoPath);
-      const latest = tags[0] || null;
-      const newer = latest && cmpSemver(latest.v, current) > 0 ? tags.filter((x) => cmpSemver(x.v, current) > 0) : [];
-      return sendJson(res, 200, { ok: true, current, latest: latest ? latest.tag : null, hasUpdate: newer.length > 0, newer, versions: tags });
+      const current = installedVersion();
+      const latestV = normVersion(channels[config.channel] || channels.latest || "") || (versions[0] && versions[0].v) || "";
+      const latest = latestV || null;
+      const hasUpdate = !!latest && (!current || cmpSemver(latest, current) > 0);
+      const newer = (hasUpdate && current ? versions.filter((x) => cmpSemver(x.v, current) > 0) : []).slice(0, 20);
+      return sendJson(res, 200, { ok: true, current, latest, channel: config.channel, channels, hasUpdate, newer, versions });
     } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
   }
 
   if (method === "GET" && p === "/api/updates/changelog") {
     try {
-      const to = safeId(url.searchParams.get("to"), TAG_RE);
-      if (!to) return sendError(res, 400, "缺少有效的目标版本 to");
-      const repo = config.repoPath;
-      const from = currentGitTag(repo);
-      if (!from) return sendError(res, 400, "无法确定当前版本基线的 git tag（当前 HEAD 不在任何 tag 可达点）");
-      const r = await changelogBetween(repo, from, to);
-      if (!r.ok) return sendError(res, 400, r.error);
-      return sendJson(res, 200, { ok: true, from: r.from, to: r.to, commits: r.commits, stat: r.stat });
+      const toRaw = normVersion(url.searchParams.get("to") || "");
+      if (!toRaw || !/^\d+\.\d+\.\d+/.test(toRaw)) return sendError(res, 400, "缺少有效的目标版本 to");
+      const from = normVersion(installedVersion()) || toRaw;
+      const releaseNote = await releaseNoteForVersion(toRaw);
+      return sendJson(res, 200, { ok: true, from, to: toRaw, releaseNote });
     } catch (e) { return sendError(res, 500, e.message); }
-  }
-
-  if (method === "POST" && p === "/api/remote/add") {
-    if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
-    const t = await startTask("配置官方 remote");
-    try { await ensureRemote((l) => listenTask(t, l)); finishTask(t, true); return sendJson(res, 200, { ok: true }); }
-    catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
-  }
-
-  if (method === "POST" && p === "/api/build") {
-    if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
-    const t = await startTask("构建 Harness");
-    try {
-      await build(t, (l) => listenTask(t, l));
-      finishTask(t, true);
-      return sendJson(res, 200, { ok: true });
-    } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
   }
 
   if (method === "POST" && p === "/api/upgrade") {
@@ -1073,14 +983,19 @@ async function handleApi(req, res, url) {
     if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
     const t = await startTask("升级 Harness");
     try {
-      const tag = b.target && TAG_RE.test(b.target) ? b.target : "latest";
-      let targetTag = tag;
-      if (tag === "latest") {
-        const tags = await remoteTags();
-        targetTag = tags[0] ? tags[0].tag : null;
-        if (!targetTag) throw new Error("未获取到任何版本标签");
+      const raw = b && b.target !== undefined ? String(b.target) : "";
+      let target = null;
+      if (raw) {
+        if (CHANNELS.includes(raw)) {
+          const m = await channelMap();
+          target = normVersion(m[raw] || m.latest || "");
+          if (!target) throw new Error(`渠道 ${raw} 当前无可用版本`);
+        } else {
+          target = normVersion(raw);
+          if (!/^\d+\.\d+\.\d+/.test(target)) throw new Error("无效的版本 target");
+        }
       }
-      await switchVersion(t, targetTag, { backup: b.autoBackup !== false }, (l) => listenTask(t, l));
+      await switchVersion(t, target, { backup: b.autoBackup !== false }, (l) => listenTask(t, l));
       finishTask(t, true);
       return sendJson(res, 200, { ok: true });
     } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
@@ -1088,12 +1003,12 @@ async function handleApi(req, res, url) {
 
   if (method === "POST" && p === "/api/rollback") {
     const b = await jsonBody(req);
-    const tag = safeId(b.tag, TAG_RE);
-    if (!tag) return sendError(res, 400, "缺少有效的版本 tag");
+    const raw = String((b && (b.version || b.tag)) || "").trim();
+    if (!raw || !/^\d+\.\d+\.\d+/.test(normVersion(raw))) return sendError(res, 400, "缺少有效的版本号");
     if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
-    const t = await startTask(`回滚到 ${tag}`);
+    const t = await startTask(`回滚到 ${normVersion(raw)}`);
     try {
-      await switchVersion(t, tag, { backup: b.autoBackup !== false }, (l) => listenTask(t, l));
+      await switchVersion(t, normVersion(raw), { backup: b.autoBackup !== false }, (l) => listenTask(t, l));
       finishTask(t, true);
       return sendJson(res, 200, { ok: true });
     } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
@@ -1104,7 +1019,7 @@ async function handleApi(req, res, url) {
     if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
     const t = await startTask("备份数据");
     try {
-      await createBackup({ version: packageVersion(config.repoPath), overwrite: b.overwrite === true }, (l) => listenTask(t, l));
+      await createBackup({ version: installedVersion(), overwrite: b.overwrite === true }, (l) => listenTask(t, l));
       finishTask(t, true);
       return sendJson(res, 200, { ok: true, backups: listBackups() });
     } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
@@ -1186,7 +1101,7 @@ function start() {
       console.log("==============================================");
       console.log("  dsh_manager 已启动");
       console.log(`  管理界面 : http://${config.bindHost}:${p}`);
-      console.log(`  仓库     : ${config.repoPath || "(未配置)"}`);
+      console.log(`  安装目录 : ${config.installDir}（渠道 ${config.channel}，版本 ${installedVersion() || "未安装"}）`);
       console.log(`  数据目录 : ${resolveDshHome()}`);
       console.log("  按 Ctrl+C 退出");
       console.log("==============================================");

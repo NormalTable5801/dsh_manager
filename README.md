@@ -14,7 +14,7 @@
 
 <p align="center">
   <strong>DeepSeek Harness 的本地 Web 管理台</strong> —— 零依赖、无需 <code>npm install</code>，仅本机运行。
-  一键 pnpm 构建与托管 dsh web、检测更新与版本回滚、<code>~/.dsh</code> 数据备份还原、
+  一键安装 / 更新 Harness（官方 npm 发布流）与托管 dsh web、检测更新与版本回滚、<code>~/.dsh</code> 数据备份还原、
   内置诊断 Doctor、命令控制台，以及专为新人的「依赖自动检测 + 一键安装 + 引导」。
 </p>
 
@@ -26,7 +26,7 @@
 - [这是什么？](#这是什么)
 - [快速开始](#快速开始)
 - [功能总览](#功能总览)
-- [新人依赖自动检测与一键安装](#新人依赖自动检测与一键安装)
+- [依赖自动检测与一键安装](#依赖自动检测与一键安装)
 - [运行链路 / 数据分离](#运行链路--数据分离)
 - [诊断 Doctor](#诊断-doctor)
 - [命令控制台](#命令控制台)
@@ -51,11 +51,10 @@
 
 ## 快速开始
 
-1. **准备环境**：dsh_manager 本身只依赖 **Node.js**（推荐 `^22.19.x` 或 `24.x`）。进入界面后到「环境与依赖」卡片可检测并一键安装pnpm/git。
+1. **准备环境**：dsh_manager 本身只依赖 **Node.js**（推荐 `^22.19.x` 或 `24.x`）+ **npm**（随 Node 自带）。进入界面后到「环境与依赖」卡片可检测是否就绪。
 2. 双击 `start.bat`（或运行 `node server.js`），窗口会自动打开 `http://127.0.0.1:8730`；首次进入会显示三步引导。
-3. **准备源码仓库**：如果你**已有 dsh 源码仓库**，把 dsh_manager 这个项目文件夹放到与 dsh 仓库总文件夹**同级**的位置（两者在同一个父文件夹下），程序会自动发现它；**还没有源码**，就按引导点「获取 Harness 源码（clone）」一键克隆到同级位置，或在「其它设置 → 仓库路径」手动填写路径。
-4. 回到顶部点「构建 Harness」， `apps/cli/lib/bin.js` 与 web 前端产物将会被构建。
-5. 左侧进「启动 web」，点「启动 dsh web」，浏览器会自动弹出 dsh 界面。
+3. **安装 Harness**：点顶部「安装 / 更新 Harness」（或首次引导里的对应按钮），后台会从官方 npm 发布流 `@deepseek-ai/dsh` 把最新版装进受管目录（默认 `<manager>/dsh-install`），版本与其所带工具链均已由发布方预构建好，**无需本地 pnpm / git 或 C++ 编译器**。
+4. 左侧进「启动 web」，点「启动 dsh web」，浏览器会自动弹出 dsh 界面。
 
 > 若点击 `start.bat` 后窗口一闪而过（而非停留在服务运行态），说明启动失败——多为端口被占用或 node 版本不符。
 > 此时按 Ctrl+C / 查看窗口报错即可；前端与后端均为无构建源码，改 `public/` 后刷新页面即可生效。
@@ -65,29 +64,25 @@
 | 场景 | 能力 |
 | --- | --- |
 | 一键启动 web | 托管 dsh web 子进程：启动 / 停止 / 重启、实时日志、识别访问地址、探活端口防重复启动 |
-| 更新检测 | 从官方仓库 `git fetch` 拉取 tag、以 semver 对比当前位置、提示可升级版本 |
-| 版本回滚 | 拉取官方 git tags，一键切换到任意历史版本（`git checkout` + 重新构建） |
+| 更新检测 | 从官方 npm 发布流读取 dist-tags（latest / next / alpha）与已发布版本，以 semver 对比当前位置、提示可升级版本 |
+| 版本回滚 | 列出官方 npm 历史版本，一键用 npm 安装/切换到任意历史版本到受管目录 |
 | 数据备份 | 把 `~/.dsh` 备份到 `backups/`，可还原 / 删除 / 覆盖，保留上限管理；还原前默认安全性备份 |
-| 一键构建 | 在仓库内执行 `pnpm install` + `pnpm build`，产出 CLI 入口与 web 前端 |
-| 依赖自动检测 | 状态总览实时显示 node / pnpm / git 是否就绪；缺失时给出「复制命令 / 官方下载页」，也可一键自动安装 |
-| 新人引导 | 首次运行显示三步引导（依赖 → 取源码 → 构建 → 启动），关闭后写入 config.json 不再打扰 |
+| 一键安装 / 更新 | 从官方 npm 发布流安装目标发布渠道最新版（含升级 / 回滚），无需本地构建工具链 |
+| 依赖自动检测 | 状态总览实时显示 node / npm 是否就绪；缺失时给出「复制命令 / 官方下载页」，也可一键自动安装 |
+| 新人引导 | 首次运行显示三步引导（依赖 → 安装 → 启动），关闭后写入 config.json 不再打扰 |
 | 诊断 Doctor | 纯融入 dsh-doctor 完整诊断引擎①（env / profile / session / 远程检查目录 + 版本提示 + dsh_manager 自检），flutter-doctor 风格，诚实原则安全修复 |
 | 命令控制台 | 页面内执行 `dsh xxx`，输出经 SSE 实时回显；白名单 + argv 传入，不经 shell |
-| 环境检查 | 检测 node / pnpm / git 及版本，校验 node 是否满足 Harness 约束并给出版本指引 |
+| 环境检查 | 检测 node / npm 及版本，校验 node 是否满足 Harness 约束并给出版本指引 |
 
 ## 依赖自动检测与一键安装
 
 针对「第一次用、机器上还没有环境」：
 
-1. **启动前预检**：`start.bat` 先检查 `node` 是否存在，缺失则给出提示并自动打开官方下载页，
-2. **状态总览里的「环境与依赖」卡片**：实时显示 node / pnpm / git 三项状态。每个工具都带
-   「复制安装命令」和「打开官方下载页」。
-3. **双档安装（默认引导式 + 可选自动装）**：
-   - **引导式（默认）**：只给出可复制的安装命令与官方链接，绝不替你做决定，契合"不越权改动环境"原则。
-   - **自动安装（可选）**：点「自动安装缺失依赖」后，用 `winget`（node / git）与 `corepack`（pnpm）
-     自动安装，输出实时回显；可能改动系统环境（node / git 可能需要管理员权限）。
-   - 仓库缺失时出现「获取 Harness 源码（clone）」按钮，一键 `git clone` 官方仓库并联接为仓库路径
-   - **构建和运行**，构建请直接在顶部点击 **「构建 Harness」**。
+1. **启动前预检**：`start.bat` 先检查 `node` 是否存在，缺失则给出提示并自动打开官方下载页。
+2. **状态总览里的「环境与依赖」卡片**：实时显示 node / npm 状态，缺失时提供「复制安装命令」和「打开官方下载页」。
+3. **安装 Harness（npm 发布流）**：点「安装 / 更新 Harness」即从受管目录执行 `npm install --prefix <installDir> @deepseek-ai/dsh@<version>`，
+   自动按当前发布渠道（latest / next / alpha）解析目标版本；版本及其二进制工具链已由发布方预构建，**无需 pnpm / git / 编译器**。
+4. 升级 / 回滚同理，只是安装到指定版本；操作前默认自动备份 `~/.dsh`。
 
 ## 技术说明
 
@@ -97,24 +92,24 @@
 flowchart LR
   U["你（浏览器 127.0.0.1:8730）"]
   M["dsh_manager（本仓库）<br/>server.js + doctor.js<br/>"]
-  R["Harness 源码仓库<br/>（apps/cli/lib/bin.js）"]
+  R["受管安装目录<br/>（<manager>/dsh-install，npm 装的 @deepseek-ai/dsh）"]
   W["dsh web（子进程）"]
   D["~/.dsh 数据目录<br/>（对话 + 插件 + 凭据 + 设置）"]
+  N["官方 npm 发布流<br/>（dist-tags: latest / next / alpha）"]
   U -->|"1) 启动 / 停止 / 重启、日志、控制台、诊断"| M
-  M -->|"git / pnpm / build"| R
-  M -->|"node"| W
+  M -->|"npm install / view"| N
+  M -->|"安装到受管目录"| R
+  M -->|"node 运行 CLI bin"| W
   M -->|"robocopy 备份 / 还原"| D
 ```
 
-- **Harness 源码仓库**与本项目是**两个独立的 git 仓库**（文件位置说明：两个仓库放在同级目录）。
-
-- 升级 / 回滚只改源码版本并重新构建，保留 `~/.dsh`；所有交互数据都在 `~/.dsh`，
+- **安装管理**：Harness 以官方 npm 包 `@deepseek-ai/dsh` 的形式安装进 dsh_manager 自己管控的目录（默认 `<manager>/dsh-install`），
+  与 `~/.dsh` 数据目录完全分离、互不影响。
+- 升级 / 回滚只是把受管目录里的包切到目标版本，保留 `~/.dsh`；所有交互数据都在 `~/.dsh`，
   因此切换 Harness 版本不影响你的对话与配置。
-- dsh 是一个 **pnpm workspace 单仓（monorepo）**，「装依赖 → 构建 → 起 web」整条链路依赖 pnpm：
-  `pnpm install`（装齐各 workspace 依赖）→ `pnpm build`（产出 `apps/cli/lib/bin.js` 与 `apps/web/dist`）→ `pnpm dsh web`。
-  界面上的「构建」等同于前两步；「启动 dsh web」直接以 node 运行构建产物（等价于 `pnpm dsh web`，略过 pnpm shim）。
-  也可在「其它设置」切到 `source` 模式，用 `node --import tsx/esm apps/cli/src/bin.ts` 直接跑 tsx 源码，适合调试。
-- `apps/cli`（CLI）与 `apps/web`（内置 web）位于同一工作区，依赖复用、命令统一——这是"零依赖的 dsh_manager"之外，又一重"零额外部署"。
+- 版本以 **npm dist-tags**（latest / next / alpha）作为发布渠道跟踪；「启动 dsh web」以 node 直接运行
+  受管安装里 CLI 的 bin 入口（等价于 `dsh web`），不经 pnpm shim。
+- dsh 自身的依赖与二进制工具链在发布时已由官方预构建好，**本机无需 pnpm / git / C++ 编译器**即可安装与运行。
 
 ## DSH诊断 
 
@@ -144,9 +139,10 @@ flowchart LR
 
 - 服务仅绑定 `127.0.0.1`；所有命令均由内部固定命令和校验过的参数拼接而成，避免注入。
 - 控制台命令限定 `dsh` 前缀并以 argv 传入，不经过 shell。
-- 依赖「自动安装」需点击后才执行，且使用可信包管理器（winget / corepack），默认仍以引导式为主。
-- `.gitignore` 已忽略 `backups/`（含真实 `~/.dsh` 数据）、`logs/`、`config.json`（本机路径）、`.env`、
-  密钥与编辑器临时文件；**请勿 `git add -f` 强制提交**。
+- 依赖「自动安装」需点击后才执行，且使用可信包管理器（winget 装 node）；默认仍以引导式为主。
+- 受管安装目录 `<manager>/dsh-install` 与 `logs/`、`config.json`（含本机绝对路径）均视为可再生成 / 本地敏感内容，
+  `.gitignore` 已忽略 `backups/`（含真实 `~/.dsh` 数据）、`logs/`、`config.json`、`.env`、密钥与编辑器临时文件；
+  **请勿 `git add -f` 强制提交**。
 - 本工具用于本机自用，请谨慎执行还原 / 回滚 / 删除备份等动作——它们默认都有二次确认。
 - 本项目为BSD 3-Clause开源项目，仅供学习，代码仓库原样提供，对项目质量不提供明示/暗示的保证，使用造成损失本项目概不负责。
 
@@ -168,11 +164,11 @@ node server.js          # 启动管理界面，浏览器打开 http://127.0.0.1:
 | 现象 | 处理 |
 | --- | --- |
 | 端口被占用 | manager 自动改用下一个端口；dsh web 端口在「其它设置」`webPort`（0 = 自动） |
-| node 版本告警 | Harness 要求 `node ^22.19.x` 或 `24.x`，不足会导致构建失败；可用依赖卡片复制命令 / 一键装 |
-| 拉取不到版本 | 确认网络可达 GitHub，且仓库已配置官方 remote（未配置可在「版本 / 回滚」点「添加官方 remote」） |
+| node 版本告警 | Harness 要求 `node ^22.19.x` 或 `24.x`，不满足会导致安装失败；可用依赖卡片复制命令 / 一键装 |
+| 拉取/检查不到版本 | 确认网络可达 npm 源（registry.npmjs.org），且能访问官方 npm 发布流 `@deepseek-ai/dsh` |
+| 安装 / 更新失败 | 多为网络或 npm 源问题；到「更新升级」页查看 npm 安装日志定位原因后重试 |
 | `start.bat` 闪退 | 多为端口占用或 node 版本不符；按 Ctrl+C / 看窗口报错 |
-| 升级 / 回滚提示有未提交改动 | 说明 Harness 仓库工作区不干净，会中止并提示：先提交或还原后再切换版本 |
-| 想彻底清数据 | 用「备份 / 还原」管理 `~/.dsh`，不要直接手删源码目录 |
+| 想彻底清数据 | 用「备份 / 还原」管理 `~/.dsh`；重装 Harness 则删除受管目录 `dsh-install` 后重新安装 |
 
 
 ## 许可与致谢

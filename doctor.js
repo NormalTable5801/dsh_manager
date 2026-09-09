@@ -12,7 +12,7 @@
  * 凭据只做“存在性/来源链”判定，绝不回显任何 key 的值。
  *
  * 对外契约（与 server.js / public/app.js 兼容）：
- *   buildContext(opts)                      构建诊断上下文（opts: dshHome/repoPath/processVersion…）
+ *   buildContext(opts)                      构建诊断上下文（opts: dshHome/installDir/processVersion…）
  *   buildReport(ctx, only?)   (async)       跑完整引擎并返回 { checkList, findings, summary, healthy, version, meta }
  *                                           其中 findings: [{ checkId,title,level,severity,message,remediation,detail }]
  *                                            severity ∈ ok | warn | error | skip

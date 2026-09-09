@@ -7,7 +7,6 @@ const S = {
   status: null,
   versions: [],
   updateInfo: null,
-  hasRemote: false,
   currentVersion: "",
   latestTag: null,
   taskLines: [],
@@ -268,7 +267,6 @@ function renderStatus() {
   const st = S.status;
   if (!st) return;
   S.currentVersion = st.version || "?";
-  S.hasRemote = st.remoteConfigured;
   $("#topVersion").textContent = "v" + S.currentVersion;
   renderStats(st);
   renderEnvStrip(st.env);
@@ -282,7 +280,7 @@ function renderStatus() {
   if (isView("backups")) renderBackups(st.backups);
   if (isView("versions") && !S.versions.length && Date.now() - S.versionsFailAt > FAIL_COOLDOWN_MS) loadVersions(false);
   if (isView("update") && S.updateInfo === null && Date.now() - S.updateFailAt > FAIL_COOLDOWN_MS) checkUpdate(false);
-  renderGitState();
+  renderInstalledState();
 }
 
 function renderStats(st) {
@@ -290,12 +288,11 @@ function renderStats(st) {
   const rec = (opts) => `<div class="stat"><div class="k">${opts.k}</div><div class="v ${opts.cls || ""}">${opts.v}</div>${opts.sub ? `<div class="sub">${opts.sub}</div>` : ""}</div>`;
   const web = st.web;
   grid.innerHTML =
-    rec({ k: "Harness 版本", v: st.version || "?", sub: st.gitRef || "非 git 仓库" }) +
+    rec({ k: "Harness 版本", v: st.version || "未安装", sub: `渠道 ${esc(st.channel || "latest")}` }) +
     rec({ k: "数据目录(~/.dsh)", v: fmtBytes(st.homeSize), sub: st.home }) +
     rec({ k: "dsh web 状态", v: web.running ? "运行中" : "已停止", cls: web.running ? "good" : "muted", sub: web.url || (web.externalOccupied ? "端口被外部占用" : "") }) +
-    rec({ k: "仓库改动", v: st.dirty.count ? st.dirty.count + " 项" : "干净", cls: st.dirty.count ? "warn" : "good", sub: st.dirty.msg || "" }) +
-    rec({ k: "配置了官方 remote", v: st.remoteConfigured ? "是" : "否", cls: st.remoteConfigured ? "good" : "bad", sub: "未配置则无法检查更新" }) +
-    rec({ k: "构建工具链", v: st.env.nodeOk ? "就绪" : "告警", cls: st.env.nodeOk ? "good" : "bad", sub: st.env.nodeMessage || "" });
+    rec({ k: "安装来源", v: `npm · ${esc(st.installed ? "已安装" : "未安装")}`, cls: st.installed ? "good" : "warn", sub: st.installDir }) +
+    rec({ k: "安装工具链", v: st.env.nodeOk ? "就绪" : "告警", cls: st.env.nodeOk ? "good" : "bad", sub: st.env.nodeMessage || "" });
 }
 
 function envChip(name, val, good, tool, help) {
@@ -308,22 +305,21 @@ function envChip(name, val, good, tool, help) {
 function renderEnvStrip(env) {
   $("#envStrip").innerHTML =
     envChip("node", env.node, !!env.nodeOk, "node", env.nodeHelp) +
-    envChip("pnpm", env.pnpm, !!env.pnpm, "pnpm", env.pnpmHelp) +
-    envChip("git", String(env.git || "").replace(/^git version\s+/i, ""), !!env.git, "git", env.gitHelp);
+    envChip("npm", env.npm, !!env.npm, "node", null);
   refreshIcons($("#envStrip"));
 }
 function renderEnvActions(st) {
   const missing = st.envMissing || [];
   const acts = [];
   if (missing.length) {
-    acts.push(`<button class="action-btn small success" data-act="depsAuto" title="用 winget / corepack 自动安装缺失依赖（可能需要管理员权限）">自动安装缺失依赖</button>`);
+    acts.push(`<button class="action-btn small success" data-act="depsAuto" title="用 winget 自动安装缺失依赖（可能需要管理员权限）">自动安装缺失依赖</button>`);
     acts.push(`<button class="action-btn small" data-act="depsCopyMissing" title="复制全部缺失依赖的安装命令">复制缺失安装命令</button>`);
     acts.push(`<button class="action-btn small" data-act="depsOpen" data-tool="${missing[0]}" title="打开官方下载页（引导式）">打开官方下载页</button>`);
   } else {
     acts.push(`<span class="env-ok">依赖齐全</span>`);
   }
-  if (!st.repoExists) {
-    acts.push(`<button class="action-btn small primary" data-act="depsClone" title="git clone 官方 Harness 仓库，并设为当前仓库路径">获取 Harness 源码（clone）</button>`);
+  if (!st.installed) {
+    acts.push(`<button class="action-btn small primary" data-act="install" title="从官方 npm 发布流安装最新版 Harness 到受管目录">安装 / 更新 Harness（npm 安装）</button>`);
   }
   $("#envActions").innerHTML = acts.join(" ");
   refreshIcons($("#envActions"));
@@ -362,15 +358,15 @@ function syncWebButtons() {
   document.querySelectorAll('[data-act="stop"]').forEach((b) => { b.disabled = !running; });
 }
 
-function renderGitState() {
+function renderInstalledState() {
   const st = S.status;
   if (!st || !isView("env")) return;
   $("#gitState").innerHTML =
-    `<div class="l">仓库: ${esc(st.repoPath)}</div>` +
-    `<div class="l">Git 引用: ${esc(st.gitRef || "—")}</div>` +
+    `<div class="l">安装: ${st.installed ? "已安装" : "未安装"}</div>` +
     `<div class="l">版本: v${esc(st.version || "—")}</div>` +
-    `<div class="l">改动: ${esc(st.dirty.msg || "无")}${st.dirty.count ? `（${st.dirty.count} 项）` : ""}</div>` +
-    `<div class="l">官方 remote: ${st.remoteConfigured ? `已配置` : "未配置"}</div>`;
+    `<div class="l">发布渠道: ${esc(st.channel || "latest")}</div>` +
+    `<div class="l">安装目录: ${esc(st.installDir)}</div>` +
+    `<div class="l">安装包: <code>@deepseek-ai/dsh</code>（官方 npm 发布流）</div>`;
 }
 
 /* ---------------- 任务日志 ---------------- */
@@ -409,51 +405,49 @@ async function loadVersions(fetchFirst) {
     if (fetchFirst) await api("/api/versions");
     const d = await api("/api/versions");
     renderVersions(d);
-    if (S.status) { S.hasRemote = S.status.remoteConfigured; }
   } catch (e) { S.versionsFailAt = Date.now(); toast(e.message, "err"); }
 }
 function renderVersions(d) {
   S.versions = d.versions || [];
   const list = $("#versionList");
-  if (!S.versions.length) { list.innerHTML = `<div class="muted" style="padding:14px">暂无版本标签。点击“拉取版本列表”从官方仓库抓取。</div>`; return; }
+  if (!S.versions.length) { list.innerHTML = `<div class="muted" style="padding:14px">暂无可用版本。点击上方按钮从官方 npm 发布流刷新。</div>`; return; }
   const cur = d.current;
   const latest = S.versions[0];
   list.innerHTML = S.versions.map((v) => {
-    const isCur = v.v === cur || v.tag === cur;
-    const isLatest = latest && v.tag === latest.tag;
+    const isCur = v.v === cur;
+    const isLatest = latest && v.v === latest.v;
     const isNewer = !isCur && cmpVer(v.v, cur) > 0; // 比当前更高的版本应视为升级
     const action = isNewer
-      ? `<button class="tag-btn upgrade" data-upgrade="${esc(v.tag)}">升级到此版</button>`
-      : `<button class="tag-btn" data-rollback="${esc(v.tag)}">回滚到此版</button>`;
+      ? `<button class="tag-btn upgrade" data-upgrade="${esc(v.v)}">升级到此版</button>`
+      : `<button class="tag-btn" data-rollback="${esc(v.v)}">回滚到此版</button>`;
     return `<div class="vrow ${isCur ? "cur" : ""}">
-      <div class="vtag">${esc(v.tag)}</div>
+      <div class="vtag">v${esc(v.v)}</div>
       <div class="vmeta">${isCur ? '<span class="badge cur-badge">当前版本</span>' : ""} ${isLatest && !isCur ? '<span class="badge latest-badge">最新</span>' : ""}</div>
       <div>
         ${isCur ? "" : action}
-        <span class="muted" style="font-size:11px">当前版 ${esc(cur)}</span>
+        <span class="muted" style="font-size:11px">当前版 v${esc(cur)}</span>
       </div>
     </div>`;
   }).join("") || `<div class="muted" style="padding:14px">无版本</div>`;
-  $("#rangeInfo").innerHTML = S.status ? `当前版本 v${esc(cur)}。切换到其他版本会执行 git checkout → pnpm install → pnpm build，并在操作前自动备份 <code>~/.dsh</code>。` : "";
+  $("#rangeInfo").innerHTML = S.status ? `当前版本 v${esc(cur)}。切换到其他版本会用 npm 安装对应版本到受管目录（发布渠道 ${esc(S.status.channel || "latest")}），并在操作前自动备份 <code>~/.dsh</code>。` : "";
 }
 
 /* ---------------- 更新检查 / 升级 ---------------- */
 async function checkUpdate(silent) {
-  $("#updateInfo").innerHTML = "正在拉取官方仓库并检测版本…";
+  $("#updateInfo").innerHTML = "正在检查官方 npm 发布流…";
   try {
     const d = await api("/api/updates/check");
     S.updateInfo = d;
-    if (S.status) S.status.remoteConfigured = d.ok;
     const cur = d.current;
     renderVersions({ ...d, current: cur });
     S.changelog = null;
     const cc = $("#updateChangelogCard"); if (cc) cc.style.display = "none";
     if ($("#btnChangelog")) $("#btnChangelog").disabled = true;
     const html = [];
-    html.push(`<div class="l">当前版本: <b>v${esc(cur)}</b> &nbsp; 最新版本: <b>${d.latest ? esc(d.latest) : "—"}</b></div>`);
-    if (!d.latest) html.push(`<div class="l muted">未获取到任何版本标签（请检查网络/remote）。</div>`);
+    html.push(`<div class="l">当前版本: <b>v${esc(cur)}</b> &nbsp; 最新版本(${esc(d.channel || "latest")}): <b>${d.latest ? esc(d.latest) : "—"}</b></div>`);
+    if (!d.latest) html.push(`<div class="l muted">未获取到任何已发布版本（请检查网络与 npm 源）。</div>`);
     else if (d.hasUpdate) {
-      html.push(`<div class="l warn">检测到可升级版本：${d.newer.slice(0, 5).map((x) => esc(x.tag)).join("、")} 等</div>`);
+      html.push(`<div class="l warn">检测到可升级版本：${d.newer.slice(0, 5).map((x) => esc(x.v)).join("、")} 等</div>`);
       $("#btnUpgrade").disabled = false;
       if ($("#btnChangelog")) $("#btnChangelog").disabled = false;
     } else {
@@ -474,7 +468,7 @@ async function doUpgrade() {
   if (!S.updateInfo || !S.updateInfo.hasUpdate) return toast("请先检查更新", "err");
   const ok = await confirmBox({
     title: "升级 Harness",
-    html: `将把 Harness 升级到最新版本 <b>${esc(S.updateInfo.latest)}</b>。<br/><br/>流程：<code>git fetch</code> → 切换到最新 tag → <code>pnpm install</code> → <code>pnpm build</code>。<br/><br/><i class="muted">操作前会自动备份数据目录。</i>`,
+    html: `将把 Harness 升级到最新版本 <b>${esc(S.updateInfo.latest)}</b>。<br/><br/>流程：从官方 npm 发布流安装该版本到受管目录。<br/><br/><i class="muted">操作前会自动备份数据目录。</i>`,
     okLabel: "开始升级",
   });
   if (!ok) return;
@@ -500,13 +494,10 @@ function renderChangelog(d) {
   const card = $("#updateChangelogCard"); if (!card) return;
   card.style.display = "block";
   $("#changelogRange").textContent = `（${esc(d.from)} → ${esc(d.to)}）`;
-  const st = d.stat || {};
-  const head = `<div class="l"><b>${st.files}</b> 个文件变更 · +${st.insertions} / −${st.deletions} · <b>${d.commits.length}</b> 次提交</div>`;
-  const list = d.commits.length
-    ? `<div style="max-height:320px;overflow:auto;margin-top:8px">` + d.commits.map((c) =>
-        `<div class="l" style="font-family:var(--font-mono);font-size:12px"><span style="color:#8a8f98">${esc(c.hash)}</span>  ${esc(c.subject)}</div>`).join("") + `</div>`
-    : `<div class="l muted">两版本间无提交（可能已是最新）。</div>`;
-  $("#updateChangelog").innerHTML = head + list;
+  const note = d.releaseNote
+    ? `<div style="white-space:pre-wrap;font-size:13px;line-height:1.6;margin:0;padding:10px 12px;background:var(--input);border:1px solid var(--border);border-radius:var(--radius-md)"><b>${esc(d.to)} 官方更新说明</b><br/>${esc(d.releaseNote)}</div>`
+    : `<div class="l muted">该版本未发布官方更新说明。</div>`;
+  $("#updateChangelog").innerHTML = note;
 }
 
 $("#versionList").addEventListener("click", async (e) => {
@@ -518,7 +509,7 @@ $("#versionList").addEventListener("click", async (e) => {
   if (up) {
     const ok = await confirmBox({
       title: "升级到该版本",
-      html: `将 Harness 升级到版本 <b>${esc(tag)}</b>。<br/><br/>流程：<code>git fetch</code> → 切换到该 tag → <code>pnpm install</code> → <code>pnpm build</code>。<br/><br/><i class="muted">操作前会自动备份数据目录。</i>`,
+      html: `将 Harness 升级到版本 <b>${esc(tag)}</b>。<br/><br/>流程：从官方 npm 发布流安装该版本到受管目录。<br/><br/><i class="muted">操作前会自动备份数据目录。</i>`,
       okLabel: "开始升级",
     });
     if (!ok) return;
@@ -532,7 +523,7 @@ $("#versionList").addEventListener("click", async (e) => {
   }
   const ok = await confirmBox({
     title: "回滚版本",
-    html: `确定切换到版本 <b>${esc(tag)}</b> 吗？<br/><br/>这会在仓库内执行 <code>git checkout</code> + 重新构建。操作前会自动备份数据目录。<br/><br/><span class="warn-title">注意：</span> 这是破坏性操作，请确认仓库无未提交改动。`,
+    html: `确定切换到版本 <b>${esc(tag)}</b> 吗？<br/><br/>会用 npm 把受管目录切换到该版本（非破坏性数据操作）。操作前会自动备份数据目录。`,
     okLabel: "切换到此版本",
   });
   if (!ok) return;
@@ -587,20 +578,18 @@ function renderEnv() {
   const card = (k, v, good) => `<div class="stat"><div class="k">${k}</div><div class="v ${good ? "good" : v ? "bad" : "muted"}">${esc(v || "未检测到")}</div></div>`;
   $("#envDetail").innerHTML =
     card("Node", e.node, e.nodeOk) +
-    card("pnpm", e.pnpm, !!e.pnpm) +
-    card("git", e.git, !!e.git) +
+    card("npm", e.npm, !!e.npm) +
     (e.nodeMessage ? `<div class="stat" style="grid-column:1/-1"><div class="k">说明</div><div class="sub" style="white-space:pre-wrap">${esc(e.nodeMessage)}</div></div>` : "");
 }
 function renderConfigForm() {
   if (!S.status) return;
   const c = S.status.mixed;
-  $("#cfgRepoPath").value = c.repoPath || "";
+  $("#cfgInstallDir").value = (c.installDir || "").replace(/[\\/]+$/, "");
+  $("#cfgChannel").value = c.channel || "latest";
   $("#cfgDshHome").value = c.dshHome || "";
   $("#cfgPort").value = c.port;
   $("#cfgWebPort").value = c.webPort;
-  $("#cfgLaunchMode").value = c.launchMode;
-  $("#cfgLaunchProfile").value = c.launchProfile;
-  $("#cfgRemote").value = c.officialRemote;
+  $("#cfgLaunchProfile").value = c.launchProfile || "";
   $("#cfgAutoBackup").checked = c.autoBackupBeforeUpgrade;
   $("#cfgSafety").checked = c.safetyBackupBeforeRestore;
   $("#cfgMaxBackups").value = c.maxBackups;
@@ -941,20 +930,12 @@ async function copyMissingCmds() {
 }
 async function autoInstall() {
   const missing = (S.status && S.status.envMissing) || [];
-  const ok = await confirmBox({ title: "自动安装缺失依赖", html: `将通过 winget / corepack 自动安装：<b>${esc(missing.join("、") || "—")}</b>。<br/><span class="warn-title">会改动你的系统环境</span>，node / git 走 winget 可能需要管理员权限。是否继续？`, okLabel: "自动安装" });
+  const ok = await confirmBox({ title: "自动安装缺失依赖", html: `将通过 winget 自动安装：<b>${esc(missing.join("、") || "—")}</b>。<br/><span class="warn-title">会改动你的系统环境</span>，Node 走 winget 可能需要管理员权限。是否继续？`, okLabel: "自动安装" });
   if (!ok) return;
   setBusy(true, "自动安装依赖中…");
   try { const d = await api("/api/deps/install", { method: "POST", body: { tools: missing } }); toast((d.installed && d.installed.length ? `已触发安装：${d.installed.join("、")}` : "依赖已就绪"), "ok"); }
   catch (e) { toast(e.message, "err"); }
   finally { setBusy(false); setTimeout(() => refresh(), 2500); }
-}
-async function cloneHarness() {
-  const ok = await confirmBox({ title: "获取 Harness 源码", html: `将执行 <code>git clone ${esc(S.status ? S.status.mixed.officialRemote : "…")}</code> 到 dsh_manager 的同级目录，并联接为仓库路径（<b>不会自动构建</b>，构建请点顶部按钮）。`, okLabel: "开始 clone" });
-  if (!ok) return;
-  setBusy(true, "拉取源码中…");
-  try { const d = await api("/api/deps/clone", { method: "POST" }); toast(d.already ? "已存在 Harness 仓库" : "源码已获取，请到顶部点「构建 Harness」", "ok"); }
-  catch (e) { toast(e.message, "err"); }
-  finally { setBusy(false); refresh(); }
 }
 async function dismissOnboard() {
   // 本地优先：立即关闭，本会话内后续轮询/SSE 不再弹回
@@ -970,7 +951,7 @@ function bindActions() {
     const btn = e.target.closest("[data-act]");
     if (!btn) return;
     const act = btn.dataset.act;
-    if (act === "build") { setBusy(true, "构建中…"); try { await api("/api/build", { method: "POST" }); toast("构建完成", "ok"); } catch (err) { toast(err.message, "err"); } finally { refresh(); } }
+    if (act === "install") { setBusy(true, "正在安装 / 更新 Harness…"); try { await api("/api/install", { method: "POST" }); toast("安装 / 更新完成", "ok"); } catch (err) { toast(err.message, "err"); } finally { refresh(); } }
     else if (act === "launch") launchWeb(false);
     else if (act === "stop") stopWeb();
     else if (act === "restart") { try { await api("/api/stop", { method: "POST" }); setTimeout(() => launchWeb(true), 600); } catch (e) { toast(e.message, "err"); } }
@@ -978,7 +959,6 @@ function bindActions() {
     else if (act === "backupRefresh") refresh();
     else if (act === "check") checkUpdate(false);
     else if (act === "upgrade") doUpgrade();
-    else if (act === "addremote") addRemote();
     else if (act === "refreshVersions") { checkUpdate(false); }
     else if (act === "doctorRun") runDoctor(false);
     else if (act === "consoleRun") runConsole();
@@ -997,7 +977,6 @@ function bindActions() {
     else if (act === "depsOpen") { const h = depHelp(btn.dataset.tool); if (h && h.url) window.open(h.url, "_blank"); }
     else if (act === "depsCopyMissing") copyMissingCmds();
     else if (act === "depsAuto") autoInstall();
-    else if (act === "depsClone") cloneHarness();
     else if (act === "onboardDismiss") dismissOnboard();
   });
 }
@@ -1009,23 +988,14 @@ async function doBackup() {
   catch (e) { toast(e.message, "err"); }
   finally { refresh(); }
 }
-async function addRemote() {
-  const ok = await confirmBox({ title: "添加官方 remote", html: `将为仓库添加 <code>origin → ${esc(S.status ? S.status.mixed.officialRemote : "")}</code>，用于拉取版本与检测更新。`, okLabel: "添加" });
-  if (!ok) return;
-  setBusy(true, "配置 remote…");
-  try { await api("/api/remote/add", { method: "POST" }); toast("已配置", "ok"); }
-  catch (e) { toast(e.message, "err"); }
-  finally { refresh(); }
-}
 async function saveConfig() {
   const body = {
-    repoPath: $("#cfgRepoPath").value.trim(),
+    installDir: $("#cfgInstallDir").value.trim(),
+    channel: $("#cfgChannel").value,
     dshHome: $("#cfgDshHome").value.trim(),
     port: parseInt($("#cfgPort").value, 10),
     webPort: parseInt($("#cfgWebPort").value, 10),
-    launchMode: $("#cfgLaunchMode").value,
     launchProfile: $("#cfgLaunchProfile").value.trim(),
-    officialRemote: $("#cfgRemote").value.trim(),
     autoBackupBeforeUpgrade: $("#cfgAutoBackup").checked,
     safetyBackupBeforeRestore: $("#cfgSafety").checked,
     maxBackups: parseInt($("#cfgMaxBackups").value, 10),
@@ -1103,7 +1073,7 @@ function renderView(name) {
   $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
   const titles = { dashboard: "状态总览", launch: "启动 web", update: "更新升级", versions: "版本 / 回滚", backups: "数据备份", env: "环境检查", doctor: "诊断 Doctor", console: "控制台 Console", plugins: "插件 Plugins", settings: "设置" };
   $("#viewTitle").textContent = titles[name] || "";
-  if (name === "env" && S.status) { renderEnv(); renderGitState(); }
+  if (name === "env" && S.status) { renderEnv(); renderInstalledState(); }
   if (name === "settings") { renderConfigForm(); if (!S.retry) loadRetry(); if (!S.settings) loadSettingsSections(); }
   if (name === "backups" && S.status) renderBackups(S.status.backups);
   if (name === "doctor" && !S.doctorLoaded) runDoctor(true);
