@@ -255,11 +255,8 @@ function connectSSE() {
     else if (m.type === "console:line") { S.consoleRunning = true; appendConsoleLine(m.line.text); }
     else if (m.type === "console:end") { S.consoleRunning = false; appendConsoleLine("[进程结束，退出码 " + m.code + "]", "muted"); syncConsoleButtons(); }
   };
-  es.onerror = () => {
-    const dot = $("#connDot");
-    dot.innerHTML = '<span class="conn-dot"></span>已断开，重连中…';
-    dot.classList.add("off");
-  };
+  es.onopen = () => { const b = $("#connBadge"); if (b) b.classList.remove("off"); };
+  es.onerror = () => { const b = $("#connBadge"); if (b) b.classList.add("off"); };
 }
 
 /* ---------------- 状态渲染 ---------------- */
@@ -290,8 +287,8 @@ function renderStats(st) {
   grid.innerHTML =
     rec({ k: "Harness 版本", v: st.version || "未安装", sub: `渠道 ${esc(st.channel || "latest")}` }) +
     rec({ k: "数据目录(~/.dsh)", v: fmtBytes(st.homeSize), sub: st.home }) +
-    rec({ k: "dsh web 状态", v: web.running ? "运行中" : "已停止", cls: web.running ? "good" : "muted", sub: web.url || (web.externalOccupied ? "端口被外部占用" : "") }) +
-    rec({ k: "安装来源", v: `npm · ${esc(st.installed ? "已安装" : "未安装")}`, cls: st.installed ? "good" : "warn", sub: st.installDir }) +
+    rec({ k: "dsh web 状态", v: web.running ? "运行中" : "已停止", cls: web.running ? "good" : "muted", sub: web.url || (web.externalOccupied ? `外部 dsh web (端口 ${web.externalPort})` : "") }) +
+    rec({ k: "Harness 安装", v: st.installed ? "已安装" : "未安装", cls: st.installed ? "good" : "warn", sub: `npm 全局 · ${esc(st.installDir || "未解析")}（命令行 dsh 可直接使用）` }) +
     rec({ k: "安装工具链", v: st.env.nodeOk ? "就绪" : "告警", cls: st.env.nodeOk ? "good" : "bad", sub: st.env.nodeMessage || "" });
 }
 
@@ -318,9 +315,6 @@ function renderEnvActions(st) {
   } else {
     acts.push(`<span class="env-ok">依赖齐全</span>`);
   }
-  if (!st.installed) {
-    acts.push(`<button class="action-btn small primary" data-act="install" title="从官方 npm 发布流安装最新版 Harness 到受管目录">安装 / 更新 Harness（npm 安装）</button>`);
-  }
   $("#envActions").innerHTML = acts.join(" ");
   refreshIcons($("#envActions"));
 }
@@ -344,9 +338,15 @@ function renderWeb() {
     lines.push(web.url ? `<div class="l ok">访问地址: <a style="color:var(--primary)" target="_blank" href="${web.url}">${web.url}</a></div>` : `<div class="l muted">尚未捕获到访问地址…</div>`);
   } else {
     lines.push(`<div class="l">● 已停止</div>`);
-    if (web.externalOccupied) lines.push(`<div class="l warn">端口 ${web.configuredPort} 被其他进程占用，请检查</div>`);
+    if (web.externalOccupied) lines.push(`<div class="l warn">检测到外部 dsh web 正在运行（端口 ${web.externalPort}），非本管理器启动</div>`);
   }
   box.innerHTML = lines.join("") || "—";
+  const ws = $("#webState");
+  if (ws) {
+    ws.classList.toggle("ok", web.running);
+    ws.classList.toggle("muted", !web.running);
+    ws.innerHTML = `<span class="conn-dot"></span>${web.running ? "已启动" : "未启动"}`;
+  }
   $("#btnRestart").disabled = !web.running;
   syncWebButtons();
 }
@@ -361,12 +361,19 @@ function syncWebButtons() {
 function renderInstalledState() {
   const st = S.status;
   if (!st || !isView("env")) return;
+  let legacy = "";
+  if (st.legacyInstall && st.legacyInstall.dir) {
+    legacy =
+      `<div class="l warn">检测到旧私有安装目录 <code>${esc(st.legacyInstall.dir)}</code>（v${esc(st.legacyInstall.version || "?")}）。新版改用 npm 全局安装，旧目录不再使用，可清理以释放空间（数据仍在 ~/.dsh，不受影响）。</div>` +
+      `<div class="btn-row"><button class="action-btn small" data-act="cleanupLegacy">清理旧安装目录</button></div>`;
+  }
   $("#gitState").innerHTML =
     `<div class="l">安装: ${st.installed ? "已安装" : "未安装"}</div>` +
     `<div class="l">版本: v${esc(st.version || "—")}</div>` +
     `<div class="l">发布渠道: ${esc(st.channel || "latest")}</div>` +
-    `<div class="l">安装目录: ${esc(st.installDir)}</div>` +
-    `<div class="l">安装包: <code>@deepseek-ai/dsh</code>（官方 npm 发布流）</div>`;
+    `<div class="l">安装目录: ${esc(st.installDir || "（未解析 npm 全局目录）")}（npm 全局，命令行 dsh 可直接使用）</div>` +
+    `<div class="l">安装包: <code>@deepseek-ai/dsh</code>（官方 npm 发布流）</div>` +
+    legacy;
 }
 
 /* ---------------- 任务日志 ---------------- */
@@ -952,6 +959,7 @@ function bindActions() {
     if (!btn) return;
     const act = btn.dataset.act;
     if (act === "install") { setBusy(true, "正在安装 / 更新 Harness…"); try { await api("/api/install", { method: "POST" }); toast("安装 / 更新完成", "ok"); } catch (err) { toast(err.message, "err"); } finally { refresh(); } }
+    else if (act === "cleanupLegacy") { if (!confirm("确定删除旧私有安装目录？删除后不可恢复（数据仍在 ~/.dsh，不受影响）。")) return; setBusy(true, "正在清理旧安装目录…"); try { await api("/api/install/cleanup-legacy", { method: "POST" }); toast("已清理", "ok"); } catch (err) { toast(err.message, "err"); } finally { refresh(); } }
     else if (act === "launch") launchWeb(false);
     else if (act === "stop") stopWeb();
     else if (act === "restart") { try { await api("/api/stop", { method: "POST" }); setTimeout(() => launchWeb(true), 600); } catch (e) { toast(e.message, "err"); } }

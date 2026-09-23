@@ -43,7 +43,7 @@ const DEP_HELP = {
 };
 
 const DEFAULT_CONFIG = {
-  installDir: "",                  // 受管独立 npm 安装目录；留空 => <dsh_manager>/dsh-install
+  installDir: "",                  // 旧版受管私有安装目录（已改为 npm 全局安装；仅用于检测旧目录并提示清理）
   channel: "latest",               // 检测/升级默认跟随的发布流：latest | next | alpha
   onboarded: false,                // 是否已完成首次引导（写入被 gitignore 的 config.json）
   dshHome: "",                     // 留空 => %USERPROFILE%\.dsh / $DSH_HOME
@@ -427,17 +427,43 @@ async function restoreBackup(id, { safety }, tl) {
 
 /* ------------------------------- npm 安装 / 检测 / 升级 ------------------------------- */
 
-function installPkgDir() {
-  const seg = INSTALL_PKG.split("/");
-  return path.join(config.installDir, "node_modules", ...seg);
+// 全局安装模式：Harness 通过 `npm i -g @deepseek-ai/dsh` 装到 npm 全局目录（默认位置，命令行 `dsh` 直接可用），
+// manager 与 cmd 共用同一份，避免“私有 installDir + PATH 上另一套全局 dsh”造成的版本错位与端口冲突。
+let _prefixCache = { at: 0, val: "" };
+/** npm 全局 prefix（`npm prefix -g` 的结果；失败返回空串）。带 60s 缓存，安装后调用 invalidatePrefixCache 使失效。 */
+function npmPrefix() {
+  const now = Date.now();
+  if (_prefixCache.val && now - _prefixCache.at < 60000) return _prefixCache.val;
+  const r = runSync("npm", ["prefix", "-g"], { encoding: "utf8" });
+  _prefixCache = { at: now, val: r.code === 0 ? (r.out || "").trim() : "" };
+  return _prefixCache.val;
 }
-/** 当前受管安装的 dsh 版本（未安装返回空串）。 */
+function invalidatePrefixCache() { _prefixCache = { at: 0, val: "" }; }
+/** 全局安装的 dsh 包目录（解析不到 npm prefix 返回空串）。 */
+function installPkgDir() {
+  const prefix = npmPrefix();
+  return prefix ? path.join(prefix, "node_modules", "@deepseek-ai", "dsh") : "";
+}
+/** 当前全局安装的 dsh 版本（未安装返回空串）。 */
 function installedVersion() {
-  try { return JSON.parse(fs.readFileSync(path.join(installPkgDir(), "package.json"), "utf8")).version || ""; }
+  const dir = installPkgDir();
+  if (!dir) return "";
+  try { return JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version || ""; }
   catch { return ""; }
 }
 function hasInstall() {
-  return fs.existsSync(path.join(installPkgDir(), "package.json"));
+  const dir = installPkgDir();
+  return !!(dir && fs.existsSync(path.join(dir, "package.json")));
+}
+/** 旧私有安装目录信息（新版本不再使用 config.installDir 为安装目标，仅在检测到旧目录时提供一键清理）。 */
+function legacyInstallInfo() {
+  const dir = config.installDir && config.installDir.trim() ? path.resolve(expandTilde(config.installDir)) : "";
+  if (!dir) return null;
+  const pkg = path.join(dir, "node_modules", "@deepseek-ai", "dsh", "package.json");
+  if (!fs.existsSync(pkg)) return null;
+  let version = "";
+  try { version = JSON.parse(fs.readFileSync(pkg, "utf8")).version || ""; } catch { /* ignore */ }
+  return { dir, version, exists: true };
 }
 
 /** 只读查询 npm 注册表（如 dist-tags / versions），返回解析后的值。 */
@@ -467,19 +493,19 @@ async function targetVersionForChannel() {
   return normVersion(m[config.channel] || m.latest || "") || null;
 }
 
-/** 安装 dsh 到受管目录：version 为空则按 config.channel 装渠道最新。 */
+/** 安装 dsh 到 npm 全局目录：version 为空则按 config.channel 装渠道最新。 */
 async function npmInstall(version, tl) {
   const target = version ? normVersion(version) : ((await targetVersionForChannel()) || config.channel);
-  fs.mkdirSync(config.installDir, { recursive: true });
   const spec = `${INSTALL_PKG}@${target}`;
-  tl(`npm install --prefix ${config.installDir} ${spec} ...`);
+  tl(`npm install -g ${spec} ...`);
   const code = await run({
     cmd: "npm",
-    args: ["--prefix", config.installDir, "install", spec, "--no-fund", "--no-audit", "--no-save", "--loglevel=error"],
-    cwd: config.installDir, label: "npm", onLine: tl,
+    args: ["-g", "install", spec, "--no-fund", "--no-audit", "--loglevel=error"],
+    label: "npm", onLine: tl,
   });
   if (code !== 0) throw new Error(`npm install 失败 (exit=${code})，请查看上方日志恢复`);
-  tl("安装完成");
+  invalidatePrefixCache();
+  tl(`安装完成（npm 全局目录 ${npmPrefix() || "未解析"}，命令行 dsh 已可直接使用）`);
 }
 /** 确保已安装 dsh（未安装则装 channel 最新）。 */
 async function ensureInstalled(tl) {
@@ -520,13 +546,6 @@ function webBinPath() {
   return { cmd: f ? process.execPath : "", args: f ? [f] : [] };
 }
 function isWebRunning() { return !!(WEB.proc && WEB.proc.exitCode === null); }
-function probeWebPort(port) {
-  try {
-    const r = spawnSync("netstat", ["-ano", "-p", "tcp"], { encoding: "utf8", windowsHide: true });
-    const hits = (r.stdout || "").split(/\r?\n/).filter((l) => /LISTENING/.test(l) && l.includes(":" + port));
-    return hits.length > 0;
-  } catch { return false; }
-}
 function stopWeb() {
   if (!isWebRunning()) return false;
   try { WEB.proc.kill(); } catch {}
@@ -537,18 +556,63 @@ function stopWeb() {
 }
 function webState() {
   const running = isWebRunning();
-  let external = false;
-  if (running && config.webPort > 0) external = probeWebPort(config.webPort);
+  let externalPort = 0;
+  if (!running) {
+    // 未由本管理器启动时，探测是否有外部 dsh web 实例在跑（cmd 里 `dsh web` 等）。
+    // 探测固定 webPort（若配了）与 dsh web 默认端口 3080；用进程命令行匹配确认是 dsh，降低误判。
+    const cand = (config.webPort > 0 ? [config.webPort] : []).concat(3080);
+    externalPort = probeExternalDsh(cand);
+  }
   return {
     running,
     pid: running ? WEB.pid : null,
     startedAt: running ? WEB.startedAt : null,
     mode: "npm", profile: config.launchProfile,
     configuredPort: config.webPort,
-    externalOccupied: external,
+    externalPort,
+    externalOccupied: externalPort > 0,
     url: running ? WEB.url : null,
     recentLog: running ? WEB.recentLog.slice(-200) : [],
   };
+}
+/** 外部 dsh web 探测缓存：同一批候选端口在 TTL 内不重复 spawn 探测（避免每次状态轮询都起 PowerShell）。 */
+let _extProbeCache = { at: 0, ports: null, result: null };
+/** 判断某 PID 是否为 dsh 进程：读取进程命令行，命中 dsh 特征才算（避免端口被其他程序占用时误报）。 */
+function isDshProcess(pid) {
+  try {
+    let cmd = "";
+    if (isWin) {
+      const r = spawnSync("powershell", ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' | Select-Object -ExpandProperty CommandLine`], { encoding: "utf8", windowsHide: true, timeout: 6000 });
+      cmd = (r.stdout || "").trim();
+    } else {
+      const r = spawnSync("ps", ["-p", pid, "-o", "command="], { encoding: "utf8", windowsHide: true });
+      cmd = (r.stdout || "").trim();
+    }
+    return /dsh|deepseek-ai|harness/i.test(cmd);
+  } catch { return false; }
+}
+/** 从 netstat 取某监听端口对应 PID（无则空串）。 */
+function listeningPidOnPort(port) {
+  try {
+    const r = spawnSync("netstat", ["-ano", "-p", "tcp"], { encoding: "utf8", windowsHide: true });
+    const re = new RegExp(`\\b${port}\\s+.*?LISTENING\\s+(\\d+)\\s*$`, "m");
+    const m = re.exec(r.stdout || "");
+    return m ? m[1] : "";
+  } catch { return ""; }
+}
+/** 探测指定端口里是否有“疑似 dsh web”在被监听；命中返回该端口，否则 0。带 12s 缓存。 */
+function probeExternalDsh(ports) {
+  const list = [...new Set(ports.filter((p) => Number.isInteger(p) && p > 0))].sort();
+  const key = list.join(",");
+  const now = Date.now();
+  if (_extProbeCache.result !== null && _extProbeCache.ports === key && now - _extProbeCache.at < 12000) return _extProbeCache.result;
+  let result = 0;
+  for (const p of list) {
+    const pid = listeningPidOnPort(p);
+    if (pid && isDshProcess(pid)) { result = p; break; }
+  }
+  _extProbeCache = { at: now, ports: key, result };
+  return result;
 }
 
 /** 在默认浏览器打开 URL；失败静默忽略。 */
@@ -563,13 +627,13 @@ async function launchWeb() {
   if (isWebRunning()) throw new Error("dsh web 已在运行");
   const bin = webBinPath();
   if (!bin.cmd || !fs.existsSync(bin.args[0])) {
-    throw new Error(`尚未安装 Harness（受管目录 ${config.installDir}），请先在“环境/检测更新”处安装后再启动`);
+    throw new Error(`尚未安装 Harness（npm 全局目录 ${npmPrefix() || "未解析"}），请先在“环境/检测更新”处安装后再启动`);
   }
   const args = [...bin.args, "--profile", config.launchProfile];
   if (config.webPort > 0) args.push("--port", String(config.webPort));
   const env = { ...process.env, [DSHDIR_ENV]: resolveDshHome() };
   WEB.recentLog = []; WEB.url = null;
-  const child = spawn(bin.cmd, args, { cwd: config.installDir, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const child = spawn(bin.cmd, args, { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   WEB.proc = child; WEB.pid = child.pid; WEB.startedAt = Date.now();
   const emit = (buf) => String(buf).split(/\r?\n/).forEach((line) => {
     const text = stripAnsi(line);
@@ -668,7 +732,7 @@ async function installHarness(tl) {
   try {
     await ensureInstalled((l) => listenTask(t, l));
     finishTask(t, true);
-    return { ok: true, installedVersion: installedVersion(), installDir: config.installDir };
+    return { ok: true, installedVersion: installedVersion(), installDir: npmPrefix() };
   } catch (e) { finishTask(t, false, e); throw e; }
 }
 
@@ -676,8 +740,8 @@ function statusPayload() {
   const home = resolveDshHome();
   return {
     ok: true,
-    installDir: config.installDir, installed: hasInstall(),
-    version: installedVersion(), channel: config.channel,
+    installDir: npmPrefix(), installed: hasInstall(),
+    legacyInstall: legacyInstallInfo(), version: installedVersion(), channel: config.channel,
     home, homeSize: cachedHomeSize(),
     onboarded: !!config.onboarded, envMissing: envMissing(),
     web: webState(), env: envInfo(), backups: listBackups(),
@@ -723,7 +787,7 @@ function runConsoleCommand(input) {
   if (!args) throw new Error("只支持以 dsh 开头的命令，例如：dsh doctor");
   const base = dshBinArgs();
   const child = spawn(base[0], [...base.slice(1), ...args], {
-    cwd: config.installDir, env: { ...process.env, DSH_HOME: resolveDshHome() }, windowsHide: false,
+    cwd: ROOT, env: { ...process.env, DSH_HOME: resolveDshHome() }, windowsHide: false,
   });
   CONSOLE.proc = child;
   CONSOLE.cmd = "dsh " + args.join(" ");
@@ -761,7 +825,7 @@ function pluginCliAvailable() {
 /** 转发一条 `dsh plugin ...` 命令（走受管安装的 CLI）。 */
 async function runPluginCli(args, tl) {
   const base = dshBinArgs();
-  return run({ cmd: base[0], args: [...base.slice(1), ...args], cwd: config.installDir, env: { ...process.env, [DSHDIR_ENV]: resolveDshHome() }, onLine: tl, label: "dsh" });
+  return run({ cmd: base[0], args: [...base.slice(1), ...args], cwd: ROOT, env: { ...process.env, [DSHDIR_ENV]: resolveDshHome() }, onLine: tl, label: "dsh" });
 }
 /** GET /api/plugins 汇总载荷（当前 dsh 官方机制仅 Profile 组合包）。 */
 function pluginsSummary() {
@@ -793,12 +857,28 @@ async function handleApi(req, res, url) {
     try {
       await ensureInstalled((l) => listenTask(t, l));
       finishTask(t, true);
-      return sendJson(res, 200, { ok: true, installed: hasInstall(), version: installedVersion(), installDir: config.installDir });
+      return sendJson(res, 200, { ok: true, installed: hasInstall(), version: installedVersion(), installDir: npmPrefix() });
     } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
   }
   if (method === "POST" && p === "/api/onboard/ack") {
     config.onboarded = true; saveConfig();
     return sendJson(res, 200, { ok: true });
+  }
+  if (method === "POST" && p === "/api/install/cleanup-legacy") {
+    const info = legacyInstallInfo();
+    if (!info) return sendJson(res, 200, { ok: true, removed: false });
+    if (activeTask) return sendError(res, 409, `已有任务进行中：${activeTask.name}`);
+    const t = await startTask("清理旧私有安装目录");
+    try {
+      listenTask(t, `删除旧目录：${info.dir} ...`);
+      fs.rmSync(info.dir, { recursive: true, force: true });
+      config.installDir = "";
+      saveConfig();
+      invalidatePrefixCache();
+      listenTask(t, "已删除；数据仍在 ~/.dsh，不受影响。");
+      finishTask(t, true);
+      return sendJson(res, 200, { ok: true, removed: true, dir: info.dir });
+    } catch (e) { finishTask(t, false, e); return sendError(res, 500, e.message); }
   }
   if (method === "GET" && p === "/api/backups") return sendJson(res, 200, { ok: true, backups: listBackups() });
   if (method === "GET" && p === "/api/web") return sendJson(res, 200, { ok: true, web: webState() });
@@ -1101,7 +1181,7 @@ function start() {
       console.log("==============================================");
       console.log("  dsh_manager 已启动");
       console.log(`  管理界面 : http://${config.bindHost}:${p}`);
-      console.log(`  安装目录 : ${config.installDir}（渠道 ${config.channel}，版本 ${installedVersion() || "未安装"}）`);
+      console.log(`  全局安装目录 : ${npmPrefix() || "未解析"}（渠道 ${config.channel}，版本 ${installedVersion() || "未安装"}）`);
       console.log(`  数据目录 : ${resolveDshHome()}`);
       console.log("  按 Ctrl+C 退出");
       console.log("==============================================");

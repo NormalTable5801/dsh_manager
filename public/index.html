@@ -22,6 +22,7 @@
           <div class="brand-name">dsh_manager</div>
           <div class="brand-sub">DeepSeek Harness 管理</div>
         </div>
+        <span id="connBadge" class="conn-badge" title="dsh_manager 与本地服务连接状态"></span>
       </div>
       <nav id="nav" class="nav" aria-label="主导航">
         <button class="nav-item active" data-view="dashboard"><i data-lucide="layout-dashboard" class="ni-ic"></i><span>状态总览</span></button>
@@ -49,7 +50,7 @@
       <header class="topbar">
         <div class="topbar-title" id="viewTitle">状态总览</div>
         <div class="topbar-right">
-          <span id="connDot" class="conn"><span class="conn-dot"></span>已连接</span>
+          <span id="webState" class="conn muted"><span class="conn-dot"></span>未启动</span>
           <span id="topVersion" class="pill">—</span>
         </div>
       </header>
@@ -246,7 +247,7 @@
             <button class="action-btn small" data-act="saveConfig" id="btnSaveConfig"><i data-lucide="save"></i>保存</button>
           </div>
           <div class="form">
-            <label><span class="label-text">受管安装目录 <span class="label-code">installDir</span>（留空=默认 &lt;manager&gt;/dsh-install）</span><input id="cfgInstallDir" type="text" /></label>
+            <label><span class="label-text">旧私有安装目录 <span class="label-code">installDir</span>（已改用 npm 全局安装；“环境”页可一键清理旧目录）</span><input id="cfgInstallDir" type="text" /></label>
             <label><span class="label-text">发布渠道 <span class="label-code">channel</span>（latest / next / alpha）</span>
               <select id="cfgChannel"><option value="latest">latest</option><option value="next">next</option><option value="alpha">alpha</option></select>
             </label>
