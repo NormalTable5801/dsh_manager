@@ -1,180 +1,38 @@
-<h1 align="center">
-  dsh_manager
-</h1>
+> [!WARNING]
+> **本仓库已于 2026-11-12 归档（Archived），不再维护。**
+> 下面列出归档原因、当前更合适的替代方案，以及继续使用本仓库时需要注意的已知问题。
 
-<p align="center">
-  <img alt="Node.js" src="https://img.shields.io/badge/node.js-v22.19%20%7C%2024-339933?style=flat-square&logo=node.js&logoColor=white" />
-  <img alt="license" src="https://img.shields.io/badge/license-BSD--3--Clause-blue?style=flat-square" />
-</p>
+## 为什么归档
+本项目在早期Traffic中可见有少量使用者，之后仅零星clone；
 
-<p align="center">
-  <a href="./README.md"><b>简体中文</b></a> ·
-  <a href="./README.en.md">English</a>
-</p>
+同时DeepSeek Harness 生态补齐了本项目原本承担的绝大部分工作：
 
-<p align="center">
-  <strong>DeepSeek Harness 的本地 Web 管理台</strong> —— 零依赖、无需 <code>npm install</code>，仅本机运行。
-  一键安装 / 更新 Harness（官方 npm 发布流）与托管 dsh web、检测更新与版本回滚、<code>~/.dsh</code> 数据备份还原、
-  内置诊断 Doctor、命令控制台，以及专为新人的「依赖自动检测 + 一键安装 + 引导」。
-</p>
-
-> [!NOTE]
-> **当前主要面向 Windows。** 启动脚本与若干操作（`start.bat`、`robocopy` 备份、`taskkill` 停止进程）基于 Windows；macOS / Linux 可运行核心服务，但部分脚本需自行适配。
-
-## 目录
-
-- [这是什么？](#这是什么)
-- [快速开始](#快速开始)
-- [功能总览](#功能总览)
-- [依赖自动检测与一键安装](#依赖自动检测与一键安装)
-- [运行链路 / 数据分离](#运行链路--数据分离)
-- [诊断 Doctor](#诊断-doctor)
-- [命令控制台](#命令控制台)
-- [安全说明](#安全说明)
-- [开发与构建](#开发与构建)
-- [常见问题](#常见问题)
-- [许可与致谢](#许可与致谢)
-
-## 这是什么？
-
-`dsh_manager` 是一个**仅针对本机 DeepSeek Harness** 的 Web 管理界面：把「启动 / 停止 dsh web、拉取并切换版本、
-备份还原 `~/.dsh`、跑一遍环境诊断、随手敲几条 `dsh` 命令」这些散落在多个终端里的操作，收进一个页面。
-它没有任何第三方运行时依赖，也没有独立的部署环境要求——**装好 Node 就能跑。**
-
-> [!IMPORTANT]
-> **与 DeepSeek 无关。** `dsh_manager` 是独立的第三方项目，与 DeepSeek / DeepSeek AI 无隶属、合作、背书或授权关系，**不是 DeepSeek Harness 的官方产物**。它仅在本机便捷地构建 / 托管 / 备份 / 诊断你自行安装的 DeepSeek Harness；「DeepSeek Harness」为 DeepSeek 的注册商标，本工具按 DeepSeek Harness 品牌指南使用该名称（项目名采用官方推荐的「DSH」缩写）。
-
-> [!CAUTION]
-> `dsh_manager` 是**本机自用工具**，默认只绑定 `127.0.0.1`，为了安全请勿改绑 `0.0.0.0` 或暴露到公网。
-> 该项目读取 / 备份你的真实数据目录 `~/.dsh`（含对话、插件配置与凭据），**请勿**把 `backups/`、`logs/`、
-> `config.json`、`.env` 加入版本控制（`.gitignore` 已默认忽略）。
-
-## 快速开始
-
-1. **准备环境**：dsh_manager 本身只依赖 **Node.js**（推荐 `^22.19.x` 或 `24.x`）+ **npm**（随 Node 自带）。进入界面后到「环境与依赖」卡片可检测是否就绪。
-2. 双击 `start.bat`（或运行 `node server.js`），窗口会自动打开 `http://127.0.0.1:8730`；首次进入会显示三步引导。
-3. **安装 Harness**：点顶部「安装 / 更新 Harness」（或首次引导里的对应按钮），后台会从官方 npm 发布流 `@deepseek-ai/dsh` 把最新版装进受管目录（默认 `<manager>/dsh-install`），版本与其所带工具链均已由发布方预构建好，**无需本地 pnpm / git 或 C++ 编译器**。
-4. 左侧进「启动 web」，点「启动 dsh web」，浏览器会自动弹出 dsh 界面。
-
-> 若点击 `start.bat` 后窗口一闪而过（而非停留在服务运行态），说明启动失败——多为端口被占用或 node 版本不符。
-> 此时按 Ctrl+C / 查看窗口报错即可；前端与后端均为无构建源码，改 `public/` 后刷新页面即可生效。
-
-## 功能总览
-
-| 场景 | 能力 |
+| 本项目原本做的事 | 现在更合适的做法 |
 | --- | --- |
-| 一键启动 web | 托管 dsh web 子进程：启动 / 停止 / 重启、实时日志、识别访问地址、探活端口防重复启动 |
-| 更新检测 | 从官方 npm 发布流读取 dist-tags（latest / next / alpha）与已发布版本，以 semver 对比当前位置、提示可升级版本 |
-| 版本回滚 | 列出官方 npm 历史版本，一键用 npm 安装/切换到任意历史版本到受管目录 |
-| 数据备份 | 把 `~/.dsh` 备份到 `backups/`，可还原 / 删除 / 覆盖，保留上限管理；还原前默认安全性备份 |
-| 一键安装 / 更新 | 从官方 npm 发布流安装目标发布渠道最新版（含升级 / 回滚），无需本地构建工具链 |
-| 依赖自动检测 | 状态总览实时显示 node / npm 是否就绪；缺失时给出「复制命令 / 官方下载页」，也可一键自动安装 |
-| 新人引导 | 首次运行显示三步引导（依赖 → 安装 → 启动），关闭后写入 config.json 不再打扰 |
-| 诊断 Doctor | 纯融入 dsh-doctor 完整诊断引擎①（env / profile / session / 远程检查目录 + 版本提示 + dsh_manager 自检），flutter-doctor 风格，诚实原则安全修复 |
-| 命令控制台 | 页面内执行 `dsh xxx`，输出经 SSE 实时回显；白名单 + argv 传入，不经 shell |
-| 环境检查 | 检测 node / npm 及版本，校验 node 是否满足 Harness 约束并给出版本指引 |
-
-## 依赖自动检测与一键安装
-
-针对「第一次用、机器上还没有环境」：
-
-1. **启动前预检**：`start.bat` 先检查 `node` 是否存在，缺失则给出提示并自动打开官方下载页。
-2. **状态总览里的「环境与依赖」卡片**：实时显示 node / npm 状态，缺失时提供「复制安装命令」和「打开官方下载页」。
-3. **安装 Harness（npm 发布流）**：点「安装 / 更新 Harness」即从受管目录执行 `npm install --prefix <installDir> @deepseek-ai/dsh@<version>`，
-   自动按当前发布渠道（latest / next / alpha）解析目标版本；版本及其二进制工具链已由发布方预构建，**无需 pnpm / git / 编译器**。
-4. 升级 / 回滚同理，只是安装到指定版本；操作前默认自动备份 `~/.dsh`。
-
-## 技术说明
-
-`dsh_manager` 只做「托管与调度」，技术原理图：
-
-```mermaid
-flowchart LR
-  U["你（浏览器 127.0.0.1:8730）"]
-  M["dsh_manager（本仓库）<br/>server.js + doctor.js<br/>"]
-  R["受管安装目录<br/>（<manager>/dsh-install，npm 装的 @deepseek-ai/dsh）"]
-  W["dsh web（子进程）"]
-  D["~/.dsh 数据目录<br/>（对话 + 插件 + 凭据 + 设置）"]
-  N["官方 npm 发布流<br/>（dist-tags: latest / next / alpha）"]
-  U -->|"1) 启动 / 停止 / 重启、日志、控制台、诊断"| M
-  M -->|"npm install / view"| N
-  M -->|"安装到受管目录"| R
-  M -->|"node 运行 CLI bin"| W
-  M -->|"robocopy 备份 / 还原"| D
-```
-
-- **安装管理**：Harness 以官方 npm 包 `@deepseek-ai/dsh` 的形式安装进 dsh_manager 自己管控的目录（默认 `<manager>/dsh-install`），
-  与 `~/.dsh` 数据目录完全分离、互不影响。
-- 升级 / 回滚只是把受管目录里的包切到目标版本，保留 `~/.dsh`；所有交互数据都在 `~/.dsh`，
-  因此切换 Harness 版本不影响你的对话与配置。
-- 版本以 **npm dist-tags**（latest / next / alpha）作为发布渠道跟踪；「启动 dsh web」以 node 直接运行
-  受管安装里 CLI 的 bin 入口（等价于 `dsh web`），不经 pnpm shim。
-- dsh 自身的依赖与二进制工具链在发布时已由官方预构建好，**本机无需 pnpm / git / C++ 编译器**即可安装与运行。
-
-## DSH诊断 
-
-内置的「系统诊断」把社区 dsh-doctor 的完整诊断引擎**融入、重写进 `doctor.js`**，
-按其三层设计运行，采用 flutter-doctor 风格报告（`✓ 通过 / ! 关注 / ✗ 阻断`）：
-
-- **Layer A 内置检查**：`env`（node / pnpm / zstd / node-pty / 存储 JSON / dsh-session 锚点 / 端口 3080）、
-  `profile`（bundle 解析 / id 冲突 / insert 名 / file: 依赖 / 顶层重复 / patch 结构 / adapter 冲突 /
-  settings 注入 / main 入口 / bin 可执行 等）、`session`（zstd 容器帧数 / 孤儿 tool_call / 未闭合 turn /
-  seq 连续 / sourceEventSeqs / 未知事件类型 / end-seed 重放 / 全会话扫描）。
-- **Layer A 远程检查目录（catalog）**：声明式只读探测规则（内置副本 + 每 6h 拉取远端，可动态增新检查，无需重装）。
-- **Layer B 版本提示**：对比本端口版本与 dsh-doctor 上游版本，仅提示、不自动更新。
-
-<sup>① 诊断引擎改写自社区同名项目 [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor)（MIT License）。
-其原版权与许可全文保留在 `doctor.js` 末尾。</sup>
-
-## 命令控制台
-
-页面内嵌一个「控制台 Console」，用于执行 `dsh` 命令并把输出实时流式回显：
-
-- 只接受 `dsh` 开头的命令，例如 `dsh doctor`、`dsh --help`、`dsh web`。
-- 参数**直接作为 argv 传入**（不经 shell），因此形如 `rm -rf /` 的非 `dsh` 命令会被直接拒绝，规避注入。
-- 一次只允许一条命令在运行；可随时「停止」（在 Windows 下 taskkill 整棵进程树）。
-- 完成后保留在终端框内，便于回看历史输出。
-
-## 安全说明
-
-- 服务仅绑定 `127.0.0.1`；所有命令均由内部固定命令和校验过的参数拼接而成，避免注入。
-- 控制台命令限定 `dsh` 前缀并以 argv 传入，不经过 shell。
-- 依赖「自动安装」需点击后才执行，且使用可信包管理器（winget 装 node）；默认仍以引导式为主。
-- 受管安装目录 `<manager>/dsh-install` 与 `logs/`、`config.json`（含本机绝对路径）均视为可再生成 / 本地敏感内容，
-  `.gitignore` 已忽略 `backups/`（含真实 `~/.dsh` 数据）、`logs/`、`config.json`、`.env`、密钥与编辑器临时文件；
-  **请勿 `git add -f` 强制提交**。
-- 本工具用于本机自用，请谨慎执行还原 / 回滚 / 删除备份等动作——它们默认都有二次确认。
-- 本项目为BSD 3-Clause开源项目，仅供学习，代码仓库原样提供，对项目质量不提供明示/暗示的保证，使用造成损失本项目概不负责。
-
-## 开发与构建
-
-本项目自身零依赖，改动即生效：
-
-```bash
-cd dsh_manager          # 切换到你克隆或解压的目录
-node server.js          # 启动管理界面，浏览器打开 http://127.0.0.1:8730
-```
-
-- 后端：`server.js`（HTTP + REST + SSE + 子进程托管 + 控制台执行）、`doctor.js`（诊断与修复）。
-- 前端：`public/index.html`、`public/app.js`、`public/style.css`（无构建，直接生效）。
-- 本目录是一个已初始化的 git 仓库；改动后按需提交，注意保持 `.gitignore` 生效。
-
-## 常见问题
-
-| 现象 | 处理 |
-| --- | --- |
-| 端口被占用 | manager 自动改用下一个端口；dsh web 端口在「其它设置」`webPort`（0 = 自动） |
-| node 版本告警 | Harness 要求 `node ^22.19.x` 或 `24.x`，不满足会导致安装失败；可用依赖卡片复制命令 / 一键装 |
-| 拉取/检查不到版本 | 确认网络可达 npm 源（registry.npmjs.org），且能访问官方 npm 发布流 `@deepseek-ai/dsh` |
-| 安装 / 更新失败 | 多为网络或 npm 源问题；到「更新升级」页查看 npm 安装日志定位原因后重试 |
-| `start.bat` 闪退 | 多为端口占用或 node 版本不符；按 Ctrl+C / 看窗口报错 |
-| 想彻底清数据 | 用「备份 / 还原」管理 `~/.dsh`；重装 Harness 则删除受管目录 `dsh-install` 后重新安装 |
+| 一键安装 / 更新 Harness、托管 dsh web 启停 | [官方桌面版](https://www.deepseek.com/harness/)（2026 年 9 月底发布）：安装包直接装，自带 Electron 壳与 Node/pnpm 运行时，自动更新、托盘、后台任务，不需要本机 Node |
+| 依赖检测 / 新人引导 | 同上。官方桌面版没有 Node 前置依赖，这一层需求随之消失 |
+| 插件 profile 组合包开关 | 官方 Web 插件页 + 「发现」页（支持自定义插件索引源）；社区还有 dsh-market、DSH Plugin Store、dsh.so 等多家插件市场 |
+| `~/.dsh` 备份 / 还原 | `dsh-vault`（加密备份到私有 GitHub 仓库、一键跨机还原）、`dsh-backup`（定时 tgz + 轮转）等插件；部分桌面客户端在「设置 → 备份」里也提供 |
+| Doctor 深度诊断 | 上游 [`dsh-doctor`](https://github.com/moonquake2004/dsh-doctor) 仍在持续迭代（含 `--security`），并已有 `dsh-selfrepair` 做修复与回滚；官方桌面版自带故障恢复对话框与崩溃报告 |
 
 
-## 许可与致谢
+没有被完全覆盖只有两件事：**dsh 历史版本回滚**（官方把桌面壳与 dsh 版本锁死、只向前）和**整库备份 / 还原的图形化面板**。前者已有替代实现（hermes-web-ui 的 Studio 集成提供精确版本 pin 与 restore），后者已被上述备份插件接手。因此本项目不再有独立的维护价值。
 
-- 本项目以 **BSD-3-Clause** 许可证发布（版权 `NormalTable5801`，2026），完整条款见根目录 [`LICENSE`](LICENSE)。
-- 其「诊断 Doctor」的**诊断引擎**改写自
-  [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor)（MIT License，版权 `moonquake2004`）。
-  为符合 MIT 许可证要求，`doctor.js` 顶部标注来源、末尾保留其许可证全文。
-- DSH是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness.git) 的缩写。
+## 不建议继续使用本仓库。
+
+
+代码仍可 `git clone` 后 `node server.js` 运行，但请注意以下**已确认且不再修复**的问题（上游在本项目停止跟进后已发生变更）：
+
+- **Node 版本约束过时**：`server.js` 中硬编码 `node ^22.19.x（或 24.x）`，而上游自 0.2.2 起外部运行最低要求 Node 24.9。
+- **发布渠道过时**：仅识别 `latest / next / alpha`，与实际发布渠道已有偏差。
+- **端口探活写死 3080**：较新的官方与社区桌面端普遍改用随机端口，探活可能误判。
+- **控制台示例命令无效**：README 与控制台示例中的 `dsh doctor` 在官方 CLI 中并不存在（`doctor` 是社区 `dsh-doctor` 包/插件的命令）。
+- **插件管理存在退化路径**：`plugins.js` 的 `addProfilePluginDirect` / `removeProfilePluginDirect` 只修改 `package.json`、不执行 `pnpm install`，会留下「依赖已声明、`node_modules` 未安装、bundle patch 未生成」的半安装状态，且绕过官方的兼容性校验与 profile 写锁。**不建议用它管理新版 profile 的插件。**
+
+此外请如果还要使用继续遵守原有安全前提：本工具读取并备份真实的 `~/.dsh`（含对话、插件配置与凭据），备份产物不要入库、不要上传、不要分享；服务只应绑定 `127.0.0.1`。
+
+## 许可与致谢（不变）
+
+- 本项目以 **BSD-3-Clause** 发布（版权 `NormalTable5801`，2026），完整条款见 [`LICENSE`](LICENSE)。归档不改变既有授权。
+- `doctor.js` 的诊断引擎改写自 [`moonquake2004/dsh-doctor`](https://github.com/moonquake2004/dsh-doctor)（MIT License，版权 `moonquake2004`）。按 MIT 要求，`doctor.js` 顶部的来源标注与末尾的许可证全文**必须保留**，即使仓库归档。
+- DSH 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的缩写。本项目为独立第三方项目，与 DeepSeek 无隶属、合作、背书或授权关系。
